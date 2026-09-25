@@ -1,13 +1,10 @@
 import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
+import type { RunnableConfig } from "@langchain/core/runnables";
 import { ChatOpenAI } from "@langchain/openai";
 import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import type { Outline, OutlineSection, Review, ReviewScore, ModelConfig } from "./types";
-import { DEFAULT_MODEL_CONFIG } from "./types";
-
-// Export the state type for use in server.ts
-export type { EditorialStateType as EditorialState };
 
 // ─── Zod Schemas ────────────────────────────────────────────────────────────
 
@@ -40,53 +37,32 @@ const PostReviewScoreSchema = z.object({
 const QUALITY_CRITERIA = `Technical accuracy, clarity and readability, SEO, grammar and spelling, engagement and flow, completeness, and appropriate use of examples.`;
 const QUALITY_SCALE = `90-100: excellent and publish-ready; 75-89: good with minor issues; 60-74: acceptable but needs revision; below 60: needs significant revision.`;
 
-// ─── Graph State ────────────────────────────────────────────────────────────
+// ─── LangGraph State ────────────────────────────────────────────────────────
 
-const EditorialState = Annotation.Root({
+export type EditorialStage = "researcher" | "planner" | "writer" | "reviewer";
+
+const EditorialStateAnnotation = Annotation.Root({
   topic: Annotation<string>(),
-  sources: Annotation<string[]>({ 
-    reducer: (prev: string[], next: string[]) => next, 
-    default: () => [] 
-  }),
-  enableWebSearch: Annotation<boolean>({ 
-    reducer: (prev: boolean, next: boolean) => next, 
-    default: () => true 
-  }),
-  researchSummary: Annotation<string>({ 
-    reducer: (prev: string, next: string) => next, 
-    default: () => "" 
-  }),
-  outline: Annotation<Outline | null>({ 
-    reducer: (prev: Outline | null, next: Outline | null) => next, 
-    default: () => null 
-  }),
-  article: Annotation<string>({ 
-    reducer: (prev: string, next: string) => next, 
-    default: () => "" 
-  }),
-  originalArticle: Annotation<string>({ 
-    reducer: (prev: string, next: string) => next, 
-    default: () => "" 
-  }),
-  review: Annotation<Review | null>({ 
-    reducer: (prev: Review | null, next: Review | null) => next, 
-    default: () => null 
-  }),
-  retryCount: Annotation<number>({ 
-    reducer: (prev: number, next: number) => next, 
-    default: () => 0 
-  }),
-  reviewScores: Annotation<ReviewScore[]>({
-    reducer: (prev: ReviewScore[], next: ReviewScore[]) => next,
-    default: () => []
-  }),
-  modelConfig: Annotation<ModelConfig>({ 
-    reducer: (prev: ModelConfig, next: ModelConfig) => next, 
-    default: () => DEFAULT_MODEL_CONFIG 
-  }),
+  sources: Annotation<string[]>(),
+  enableWebSearch: Annotation<boolean>(),
+  researchSummary: Annotation<string>(),
+  outline: Annotation<Outline | null>(),
+  article: Annotation<string>(),
+  originalArticle: Annotation<string>(),
+  review: Annotation<Review | null>(),
+  retryCount: Annotation<number>(),
+  reviewScores: Annotation<ReviewScore[]>(),
+  modelConfig: Annotation<ModelConfig>(),
+  hitlStages: Annotation<EditorialStage[]>(),
+  startNode: Annotation<EditorialStage | null>(),
+  currentStage: Annotation<EditorialStage | null>(),
+  pausedStage: Annotation<EditorialStage | null>(),
+  nextNode: Annotation<EditorialStage | null>(),
 });
 
-type EditorialStateType = typeof EditorialState.State;
+export type EditorialState = typeof EditorialStateAnnotation.State;
+type EditorialStateType = EditorialState;
+type EditorialStateUpdate = typeof EditorialStateAnnotation.Update;
 
 // ─── LLM Configuration ──────────────────────────────────────────────────────
 
@@ -363,27 +339,73 @@ CRITICAL RULES:
   };
 }
 
-// ─── Edges ──────────────────────────────────────────────────────────────────
-
-function shouldRunResearcher(state: EditorialStateType) {
-  return state.enableWebSearch !== false || state.sources.length > 0 ? "researcher" : "planner";
+function getNextNode(state: EditorialState): EditorialStage | null {
+  switch (state.currentStage) {
+    case "researcher": return "planner";
+    case "planner": return "writer";
+    case "writer": return "reviewer";
+    case "reviewer":
+      return state.review && state.review.scoreAfter < 75 && state.retryCount < 2
+        ? "writer"
+        : null;
+    default: return null;
+  }
 }
 
-function shouldRetryWriting(state: EditorialStateType) {
-  if (state.review && state.review.scoreAfter < 75 && state.retryCount < 2) return "writer";
-  return "done";
+function withProgress(
+  stage: EditorialStage,
+  node: (state: EditorialState, config?: { signal?: AbortSignal }) => Promise<EditorialStateUpdate>,
+  onStageStart?: (stage: EditorialStage) => void
+) {
+  return async (state: EditorialState, config?: RunnableConfig): Promise<EditorialStateUpdate> => {
+    onStageStart?.(stage);
+    const update = await node(state, { signal: config?.signal });
+    return { ...update, currentStage: stage };
+  };
 }
 
-export function buildEditorialGraph() {
-  return new StateGraph(EditorialState)
-    .addNode("researcher", researcherNode)
-    .addNode("planner", plannerNode)
-    .addNode("writer", writerNode)
-    .addNode("reviewer", reviewerNode)
-    .addConditionalEdges(START, shouldRunResearcher, { researcher: "researcher", planner: "planner" })
-    .addEdge("researcher", "planner")
-    .addEdge("planner", "writer")
-    .addEdge("writer", "reviewer")
-    .addConditionalEdges("reviewer", shouldRetryWriting, { writer: "writer", done: END })
+export function buildEditorialGraph(onStageStart?: (stage: EditorialStage) => void) {
+  const pauseIfSelected = (stage: EditorialStage, nextStage: EditorialStage) => (state: EditorialState) =>
+    state.hitlStages.includes(stage) ? "pause" : nextStage;
+
+  return new StateGraph(EditorialStateAnnotation)
+    .addNode("researcher", withProgress("researcher", researcherNode, onStageStart))
+    .addNode("planner", withProgress("planner", plannerNode, onStageStart))
+    .addNode("writer", withProgress("writer", writerNode, onStageStart))
+    .addNode("reviewer", withProgress("reviewer", reviewerNode, onStageStart))
+    .addNode("pause", (state: EditorialState): EditorialStateUpdate => ({
+      pausedStage: state.currentStage,
+      nextNode: getNextNode(state),
+    }))
+    .addConditionalEdges(START, (state: EditorialState) => {
+      if (state.startNode) return state.startNode;
+      return state.enableWebSearch !== false || state.sources.length > 0 ? "researcher" : "planner";
+    }, {
+      researcher: "researcher",
+      planner: "planner",
+      writer: "writer",
+      reviewer: "reviewer",
+    })
+    .addConditionalEdges("researcher", pauseIfSelected("researcher", "planner"), {
+      pause: "pause",
+      planner: "planner",
+    })
+    .addConditionalEdges("planner", pauseIfSelected("planner", "writer"), {
+      pause: "pause",
+      writer: "writer",
+    })
+    .addConditionalEdges("writer", pauseIfSelected("writer", "reviewer"), {
+      pause: "pause",
+      reviewer: "reviewer",
+    })
+    .addConditionalEdges("reviewer", (state: EditorialState) => {
+      if (state.hitlStages.includes("reviewer")) return "pause";
+      return getNextNode(state) ?? "done";
+    }, {
+      pause: "pause",
+      writer: "writer",
+      done: END,
+    })
+    .addEdge("pause", END)
     .compile();
 }

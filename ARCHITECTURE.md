@@ -1,6 +1,8 @@
 # Agent Architecture
 
-The article generator runs a staged workflow over shared editorial state. The agents are in-process steps in the Node.js server, not separate HTTP services. The browser calls the app's internal routes; the server calls OpenAI APIs for model work. Research is included when web search is enabled or source material is supplied; otherwise the workflow starts with planning. After review, an article scoring below 75 gets one rewrite and re-review pass.
+The article generator uses the compiled LangGraph `StateGraph` from `buildEditorialGraph()` in `src/graph.ts` to orchestrate its in-process agent nodes. LangGraph owns the stage transitions, shared state, retry branch, and pause node; LangChain's `ChatOpenAI` provides chat-model integration, while the researcher uses the OpenAI Responses API directly. `runGraph()` in the Express server streams LangGraph node updates to the browser over SSE. Research runs when web search is enabled or source material is supplied; otherwise the graph starts with planning. After review, a score below 75 triggers one additional writing and review pass.
+
+LangGraph state is scoped to a graph invocation. For a selected human-review stage, a LangGraph pause node ends the current invocation and returns the stage, next node, and full state to the browser over SSE. After approval and any edits, the browser posts that state to `/api/generate/continue`; the server starts a new graph invocation at the saved next node. No persistent LangGraph checkpointer is configured.
 
 ```mermaid
 flowchart TD
@@ -8,9 +10,9 @@ flowchart TD
     browser -->|GET /api/models| server[Node.js / Express server<br/>Internal app API and workflow runner]
     server -->|OpenAI Models API: GET /v1/models| models[OpenAI Models API]
     browser -->|POST /api/generate<br/>SSE progress stream| server
-    server --> researchCheck
+    server -->|Invoke compiled StateGraph| researchCheck
 
-    subgraph workflow[In-process agent workflow, not separate HTTP APIs]
+    subgraph workflow[LangGraph StateGraph, in-process nodes]
         researchCheck{Web search enabled<br/>or sources supplied?}
         researchCheck -->|Yes| researcher[Researcher agent<br/>Searches and summarizes evidence]
         researchCheck -->|No| planner[Planner agent<br/>Creates article outline]
@@ -22,7 +24,7 @@ flowchart TD
         qualityCheck -->|Yes: one retry| writer
         qualityCheck -->|No| result[Publish-ready article]
 
-        state[(Shared editorial state)]
+        state[(LangGraph shared state)]
         researcher -. research summary .-> state
         planner -. outline .-> state
         writer -. draft .-> state
@@ -35,9 +37,9 @@ flowchart TD
     reviewer -->|OpenAI Chat Completions API<br/>POST /v1/chat/completions| chat
     result -->|SSE result| browser
 
-    server -. optional checkpoint after selected stages .-> browser
-    browser -->|POST /api/generate/continue<br/>resume after approval| server
-    browser -->|Stop: abort generation request| stopped[Generation stopped]
+    server -->|SSE pause node: stage, next node, full state| browser
+    browser -->|POST /api/generate/continue<br/>edited state and next node| server
+    browser -->|Abort active request| server
 ```
 
-`/api/models`, `/api/generate`, and `/api/generate/continue` are routes served by this app; they are not OpenAI endpoints. Human-in-the-loop checkpoints can be enabled for selected stages. The server pauses after a selected stage and resumes from its next node when the browser posts to `/api/generate/continue`. Stopping aborts the active generation request. The score-based rewrite path is limited to one additional writer/reviewer pass.
+`/api/models`, `/api/generate`, and `/api/generate/continue` are routes served by this app; they are not OpenAI endpoints. Human-in-the-loop pauses can be enabled for selected stages. The score-based rewrite path is limited to one additional writer/reviewer pass.

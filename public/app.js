@@ -19,20 +19,11 @@ const previewWebSearch = document.getElementById('previewWebSearch');
 const previewHitl = document.getElementById('previewHitl');
 const previewModel = document.getElementById('previewModel');
 
-const toggleSourcesBtn = document.getElementById('toggleSourcesBtn');
-const sourcesContainer = document.getElementById('sourcesContainer');
-const sourcesIcon = document.getElementById('sourcesIcon');
-
-const toggleModelBtn = document.getElementById('toggleModelBtn');
-const modelContainer = document.getElementById('modelContainer');
-const modelIcon = document.getElementById('modelIcon');
-
 // Result Areas
 const reviewBadgeContainer = document.getElementById('reviewBadgeContainer');
 const errorArea = document.getElementById('errorArea');
 const errorText = document.getElementById('errorText');
 const resultArea = document.getElementById('resultArea');
-const emptyState = document.getElementById('emptyState');
 
 // Tabs
 const tabBtns = document.querySelectorAll('.tab-btn');
@@ -150,6 +141,10 @@ function activateFinalTab() {
     if (btn) btn.classList.add('active');
     finalPane.classList.remove('hidden');
     updatePipelineExplainer('finalPane');
+}
+
+function renderCopyArticleButton() {
+    return `<div style="display: flex; justify-content: flex-end; margin-bottom: 1rem;"><button id="copyArticleBtn" class="btn-text" style="font-size: 0.875rem; gap: 0.5rem;" onclick="copyArticle()"><svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy Article</span></button></div>`;
 }
 
 const PIPELINE_STEPS = [
@@ -417,7 +412,7 @@ tabBtns.forEach(btn => {
 });
 
 // Rendering functions
-function renderPipeline(activeSteps) {
+function renderPipeline() {
     // Reset all tab step states
     document.querySelectorAll('.tab-btn[data-step]').forEach(btn => {
         btn.classList.remove('step-running', 'step-done', 'step-error');
@@ -448,25 +443,6 @@ function updateStepState(stepKey, status) {
     } else if (status === 'idle' && iconEl && stepDef) {
         iconEl.innerHTML = stepDef.icon;
     }
-}
-
-function renderOutline(outlineData) {
-    let html = `
-        <div class="flex items-center gap-4 text-sm" style="color: var(--text-muted); margin-bottom: 1.5rem;">
-            <span>📖 ${outlineData.estimatedReadingTime} min read</span>
-            <span>📑 ${outlineData.sections.length} sections</span>
-        </div>
-    `;
-    outlineData.sections.forEach(sec => {
-        html += `
-        <div style="background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 0.75rem; padding: 1rem; margin-bottom: 1rem;">
-            <h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem;">${sec.heading}</h3>
-            <ul style="list-style: none;">
-                ${sec.keyPoints.map(pt => `<li class="flex items-center gap-2" style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 0.25rem;"><span style="color: var(--primary);">•</span> ${pt}</li>`).join('')}
-            </ul>
-        </div>`;
-    });
-    outlinePane.innerHTML = html;
 }
 
 function getParagraphDiff(beforeArticle, afterArticle) {
@@ -689,10 +665,7 @@ function resetDraftTabBadge() {
 }
 
 // Human in the Loop state
-let hitlPausedAt = null;
-let hitlPendingData = null; // { stage, nextNode, fullState }
 let hitlActiveSteps = [];
-let pipelineStopped = false;
 
 // Generate Action
 generateBtn.addEventListener('click', async () => {
@@ -708,19 +681,15 @@ generateBtn.addEventListener('click', async () => {
     
     // UI Reset
     const controller = beginGenerationRequest();
-    if (emptyState) emptyState.classList.add('hidden');
     resultArea.classList.remove('hidden');
     errorArea.classList.add('hidden');
     reviewBadgeContainer.classList.add('hidden');
     finalArticle = '';
-    hitlPausedAt = null;
-    hitlPendingData = null;
-    pipelineStopped = false;
     // Reset Draft tab badge
     resetDraftTabBadge();
 
     hitlActiveSteps = hasSearch ? PIPELINE_STEPS : PIPELINE_STEPS.filter(s => s.key !== "researcher");
-    renderPipeline(hitlActiveSteps);
+    renderPipeline();
     
     hitlActiveSteps.forEach(s => updateStepState(s.key, 'idle'));
     updateStepState(hitlActiveSteps[0].key, 'running');
@@ -779,15 +748,13 @@ async function consumeStream(response) {
             }
 
             if (event.node === "hitl_pause") {
-                hitlPausedAt = event.data.stage;
-                hitlPendingData = event.data;
                 renderHitlPane(event.data);
                 return; // stream ends here
             }
 
             if (event.node === "complete") {
                 if (finalArticle) {
-                    finalPane.innerHTML = `<div style="display: flex; justify-content: flex-end; margin-bottom: 1rem;"><button id="copyArticleBtn" class="btn-text" style="font-size: 0.875rem; gap: 0.5rem;" onclick="copyArticle()"><svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy Article</span></button></div>` + marked.parse(finalArticle);
+                    finalPane.innerHTML = renderCopyArticleButton() + marked.parse(finalArticle);
                 }
                 return;
             }
@@ -822,7 +789,7 @@ function applyNodeOutput(nodeName, data) {
         researchPane.innerHTML = marked.parse(data.researchSummary);
     }
     if (nodeName === "planner" && data.outline) {
-        renderOutline(data.outline);
+        renderOutlineInPane(outlinePane, data.outline);
         draftPane.innerHTML = `<h1>${data.outline.seoTitle}</h1><p style="color:var(--text-muted);font-style:italic;margin-bottom:1.5rem;">${data.outline.metaDescription}</p><div class="spinner"></div>`;
     }
     if (nodeName === "writer" && data.article) {
@@ -947,7 +914,7 @@ function renderHitlPane(hitlData) {
     });
 
     stopBtn.addEventListener('click', () => {
-        stopPipeline(stage);
+        stopPipeline();
     });
 }
 
@@ -982,7 +949,7 @@ async function resumePipeline(fullState, nextNode) {
         // Pipeline finished (e.g. reviewer approved with good score)
         if (fullState.article) {
             finalArticle = fullState.article;
-            finalPane.innerHTML = `<div style="display: flex; justify-content: flex-end; margin-bottom: 1rem;"><button id="copyArticleBtn" class="btn-text" style="font-size: 0.875rem; gap: 0.5rem;" onclick="copyArticle()"><svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy Article</span></button></div>` + marked.parse(finalArticle);
+            finalPane.innerHTML = renderCopyArticleButton() + marked.parse(finalArticle);
         }
         // Render the reviewer's Review tab content too
         if (fullState.review) {
@@ -998,14 +965,8 @@ async function resumePipeline(fullState, nextNode) {
         // Show the final article
         activateFinalTab();
         // When reviewer is NOT selected for HITL, move review tab to final
-        const hitlStages = getHitlStages();
-        if (!hitlStages.includes('reviewer')) {
-            activateFinalTab();
-        }
         generateBtn.disabled = false;
         generateBtnText.textContent = 'Generate';
-        hitlPausedAt = null;
-        hitlPendingData = null;
         return;
     }
 
@@ -1038,9 +999,7 @@ async function resumePipeline(fullState, nextNode) {
     }
 }
 
-function stopPipeline(stage) {
-    pipelineStopped = true;
-
+function stopPipeline() {
     // Full reset: all stages back to idle, no spinners, no done marks
     hitlActiveSteps.forEach(s => updateStepState(s.key, 'idle'));
     if (hitlActiveSteps.length > 0) {
@@ -1050,7 +1009,6 @@ function stopPipeline(stage) {
     // Reset status indicators
     if (reviewBadgeContainer) reviewBadgeContainer.classList.add('hidden');
     if (errorArea) errorArea.classList.add('hidden');
-    if (emptyState) emptyState.classList.add('hidden');
 
     // Restore initial pipeline placeholder guides
     renderInitialPlaceholders();
@@ -1061,8 +1019,6 @@ function stopPipeline(stage) {
 
     generateBtn.disabled = false;
     generateBtnText.textContent = 'Generate';
-    hitlPausedAt = null;
-    hitlPendingData = null;
 }
 
 function renderInitialPlaceholders() {
@@ -1161,12 +1117,8 @@ function showError(message) {
     generateBtn.disabled = false;
     generateBtnText.textContent = 'Generate';
 
-    PIPELINE_STEPS.forEach(step => {
-        const wrapper = document.getElementById(`step-state-${step.key}`);
-        if (wrapper && wrapper.classList.contains('step-running')) {
-            updateStepState(step.key, 'error');
-        }
-    });
+    const runningStep = document.querySelector('.tab-btn.step-running')?.dataset.step;
+    if (runningStep) updateStepState(runningStep, 'error');
 }
 
 function escapeHtml(str) {

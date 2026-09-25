@@ -9,7 +9,7 @@
     "dev": "ts-node src/server.ts"
   },
   "dependencies": {
-    "@langchain/core": "^0.2.31",
+    "@langchain/core": "^0.2.36",
     "@langchain/langgraph": "^0.2.0",
     "@langchain/openai": "^0.2.0",
     "dotenv": "^16.4.5",

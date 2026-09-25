@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
-import { researcherNode, plannerNode, writerNode, reviewerNode } from './graph';
+import { buildEditorialGraph, type EditorialStage, type EditorialState } from './graph';
 import { DEFAULT_MODEL_CONFIG } from './types';
 
 dotenv.config();
@@ -85,7 +85,6 @@ const DISALLOWED_CHAT_MODELS = new Set([
 
 function isSupportedChatModel(id: string): boolean {
   if (!id.startsWith('gpt-')) return false;
-  if (id.startsWith('ft:')) return false;
   if (DISALLOWED_CHAT_MODELS.has(id)) return false;
   return !NON_CHAT_PATTERNS.some(pattern => pattern.test(id));
 }
@@ -158,98 +157,63 @@ app.get('/api/models', async (_req, res) => {
   }
 });
 
-// ─── Node Registry ─────────────────────────────────────────────────────────
-// Ordered pipeline: each entry knows which node runs and what "next" is.
-const NODE_RUNNERS: Record<string, (state: any, config: { signal: AbortSignal }) => Promise<any>> = {
-  researcher: researcherNode,
-  planner: plannerNode,
-  writer: writerNode,
-  reviewer: reviewerNode,
-};
+const EDITORIAL_STAGES = new Set<EditorialStage>(["researcher", "planner", "writer", "reviewer"]);
 
-const NODE_ORDER = ['researcher', 'planner', 'writer', 'reviewer'];
-
-// Determine the first node to run based on initial config
-function getStartNode(state: any): string {
-  if (state.enableWebSearch !== false || (state.sources?.length ?? 0) > 0) {
-    return 'researcher';
-  }
-  return 'planner';
-}
-
-// Determine the next node after a given node completes, based on full state
-function getNextNode(nodeName: string, state: any): string | null {
-  switch (nodeName) {
-    case 'researcher':
-      return 'planner';
-    case 'planner':
-      return 'writer';
-    case 'writer':
-      return 'reviewer';
-    case 'reviewer': {
-      // Mirror the graph's retry logic: low score + retry budget -> rewrite
-      if (state.review && state.review.scoreAfter < 75 && state.retryCount < 2) {
-        return 'writer';
-      }
-      return null; // done
-    }
-    default:
-      return null;
+function sendSse(res: any, event: unknown) {
+  if (!res.destroyed && !res.writableEnded) {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
   }
 }
 
-// ─── Step Runner (one node per request) ─────────────────────────────────────
-
-async function runStep(
-  res: any,
-  state: any,
-  nodeToRun: string,
-  hitlStages: string[],
-  signal: AbortSignal
-) {
-  if (signal.aborted || res.destroyed || res.writableEnded) return;
-  const runner = NODE_RUNNERS[nodeToRun];
-  if (!runner) {
-    res.write(`data: ${JSON.stringify({ status: "error", error: `Unknown node: ${nodeToRun}` })}\n\n`);
-    res.end();
-    return;
-  }
-
-  // Send "node running" so UI can show spinner on the correct step
-  res.write(`data: ${JSON.stringify({ node: nodeToRun, status: "running" })}\n\n`);
+async function runGraph(res: any, state: EditorialState, signal: AbortSignal) {
+  let currentState = state;
+  let activeStage: EditorialStage | null = null;
+  let paused = false;
 
   try {
-    const update = await runner(state, { signal });
-    if (signal.aborted || res.destroyed || res.writableEnded) return;
-    // Merge update into state
-    const newState = { ...state, ...update };
+    const graph = buildEditorialGraph(stage => {
+      activeStage = stage;
+      sendSse(res, { node: stage, status: "running" });
+    });
+    const updates = await graph.stream(state, { streamMode: "updates", signal });
 
-    // Send node result
-    res.write(`data: ${JSON.stringify({ node: nodeToRun, status: "done", data: update })}\n\n`);
+    for await (const chunk of updates) {
+      if (signal.aborted || res.destroyed || res.writableEnded) return;
 
-    // Check HITL pause
-    if (hitlStages.includes(nodeToRun)) {
-      const nextNode = getNextNode(nodeToRun, newState);
-      res.write(`data: ${JSON.stringify({ 
-        node: "hitl_pause", 
-        data: { stage: nodeToRun, nextNode, fullState: newState } 
-      })}\n\n`);
-      res.end();
-      return;
+      for (const [nodeName, update] of Object.entries(chunk)) {
+        const nodeUpdate = update as Partial<EditorialState>;
+        currentState = { ...currentState, ...nodeUpdate };
+
+        if (nodeName === "pause") {
+          paused = true;
+          sendSse(res, {
+            node: "hitl_pause",
+            data: {
+              stage: nodeUpdate.pausedStage,
+              nextNode: nodeUpdate.nextNode,
+              fullState: currentState,
+            },
+          });
+        } else if (EDITORIAL_STAGES.has(nodeName as EditorialStage)) {
+          activeStage = nodeName as EditorialStage;
+          sendSse(res, { node: nodeName, status: "done", data: nodeUpdate });
+        }
+      }
     }
 
-    // Continue to next node
-    const nextNode = getNextNode(nodeToRun, newState);
-    if (nextNode) {
-      await runStep(res, newState, nextNode, hitlStages, signal);
-    } else {
-      res.write(`data: ${JSON.stringify({ node: "complete", data: { article: newState.article } })}\n\n`);
-      res.end();
+    if (!paused && !signal.aborted && !res.destroyed && !res.writableEnded) {
+      sendSse(res, { node: "complete", data: { article: currentState.article } });
     }
   } catch (error: any) {
-    if (signal.aborted || res.destroyed || res.writableEnded) return;
-    res.write(`data: ${JSON.stringify({ node: nodeToRun, status: "error", error: error.message })}\n\n`);
-    res.end();
+    if (!signal.aborted && !res.destroyed && !res.writableEnded) {
+      sendSse(res, {
+        node: activeStage ?? "workflow",
+        status: "error",
+        error: error.message,
+      });
+    }
+  } finally {
+    if (!res.writableEnded) res.end();
   }
 }
 
@@ -267,15 +231,26 @@ app.post('/api/generate', async (req, res) => {
 
   const { hitlEnabled, hitlStages = [], ...rawState } = req.body;
 
-  const state = {
+  const state: EditorialState = {
     ...rawState,
     modelConfig: { ...DEFAULT_MODEL_CONFIG, ...(rawState.modelConfig || {}) },
     sources: rawState.sources || [],
+    enableWebSearch: rawState.enableWebSearch !== false,
+    researchSummary: "",
+    outline: null,
+    article: "",
+    originalArticle: "",
+    review: null,
     retryCount: 0,
     reviewScores: [],
+    hitlStages: hitlEnabled ? hitlStages : [],
+    startNode: null,
+    currentStage: null,
+    pausedStage: null,
+    nextNode: null,
   };
 
-  await runStep(res, state, getStartNode(state), hitlEnabled ? hitlStages : [], controller.signal);
+  await runGraph(res, state, controller.signal);
 });
 
 app.post('/api/generate/continue', async (req, res) => {
@@ -297,7 +272,19 @@ app.post('/api/generate/continue', async (req, res) => {
     return;
   }
 
-  await runStep(res, fullState, nextNode, hitlEnabled ? hitlStages : [], controller.signal);
+  if (!EDITORIAL_STAGES.has(nextNode as EditorialStage)) {
+    sendSse(res, { node: "workflow", status: "error", error: `Unknown node: ${nextNode}` });
+    res.end();
+    return;
+  }
+
+  const state: EditorialState = {
+    ...fullState,
+    hitlStages: hitlEnabled ? hitlStages : [],
+    startNode: nextNode,
+  };
+
+  await runGraph(res, state, controller.signal);
 });
 
 app.listen(PORT, () => {
