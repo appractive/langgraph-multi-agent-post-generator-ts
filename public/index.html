@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#f5f6f8">
+    <meta name="description" content="Research, plan, write, and review publish-ready articles with a multi-agent editorial workflow.">
+    <title>Agentic Article Generator</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+    <a class="skip-link" href="#resultArea">Skip to article workspace</a>
+    <div class="container">
+        
+        <!-- ─── Header ──────────────────────────────────────────────── -->
+        <header class="studio-header">
+            <div class="header-copy">
+                <h1>Agentic Article Generator</h1>
+                <p class="subtitle">Turn a topic and sources into a researched, reviewed article.</p>
+            </div>
+        </header>
+
+        <!-- ─── Topic & Sources ───────────────────────────────────────────── -->
+        <div class="card brief-card">
+            <div style="margin-bottom: 1.25rem;">
+                <label for="topic" style="display: block; font-weight: 600; margin-bottom: 0.5rem; font-size: 0.875rem;">What would you like to write about?</label>
+                <div class="input-group" style="margin-bottom: 0;">
+                    <input id="topic" type="text" class="input-text" placeholder="e.g. The quiet art of building better habits" autocomplete="off">
+                </div>
+            </div>
+
+            <!-- Sources moved directly under the topic -->
+            <div class="sources-box">
+                <div class="flex items-center justify-between" style="margin-bottom: 0.35rem;">
+                    <label for="sources" style="font-weight: 600; font-size: 0.8125rem; color: var(--text-main); display: flex; align-items: center; gap: 0.35rem;">
+                        <span aria-hidden="true">↗</span> Sources & references <span style="font-weight: 400; color: var(--text-muted);">(optional)</span>
+                    </label>
+                </div>
+                <textarea id="sources" class="input-text sources-textarea" rows="4" placeholder="One URL or reference per line, for example:
+https://example.com/article
+https://arxiv.org/abs/1234.5678
+A book, report, or citation title"></textarea>
+            </div>
+        <!-- ─── Configuration Section (Closed by default) ──────────── -->
+        <div class="config-collapsible-card">
+            <button type="button" id="toggleConfigBtn" class="config-header-toggle" aria-expanded="false">
+                <div class="flex items-center gap-2">
+                    <svg id="configChevron" width="16" height="16" class="config-chevron" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                    <span style="font-size: 1.15rem;">⚙️</span>
+                    <span class="config-title">Configuration</span>
+                </div>
+                <div class="config-preview-summary" id="configPreviewSummary">
+                    <span class="config-summary-pill is-on" id="previewWebSearch">Researcher: ON</span>
+                    <span class="config-summary-pill is-off" id="previewHitl">HITL: OFF</span>
+                    <span class="config-summary-pill is-mixed" id="previewModel">Models: Mixed</span>
+                </div>
+            </button>
+
+            <!-- Collapsible Body (Hidden / closed by default) -->
+            <div id="configBody" class="config-body hidden">
+                <div class="config-stack" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
+                    <!-- ─── Researcher Toggle ───────────────────────────────── -->
+                    <div class="toggle-wrapper flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            <span style="font-size: 1.25rem;">🌐</span>
+                            <div>
+                                <div style="font-weight: 600; font-size: 0.875rem;">Researcher Agent</div>
+                                <div class="text-xs" style="color: var(--text-muted)">Search the live web and your supplied references when enabled.</div>
+                            </div>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="webSearch" aria-label="Run the Researcher Agent" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+
+                    <!-- ─── Human in the Loop ────────────────────────────────── -->
+                    <div style="padding: 1rem; background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 0.75rem;">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="flex items-center gap-3">
+                                <span style="font-size: 1.25rem;">👤</span>
+                                <div>
+                                <div style="font-weight: 600; font-size: 0.875rem;">Human in the Loop</div>
+                                <div class="text-xs" style="color: var(--text-muted)">Pause after each selected stage to review and approve before continuing</div>
+                            </div>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="humanInLoop" aria-label="Enable human review checkpoints">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    
+                    <div id="humanInLoopStages" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem;">
+                        <label class="stage-checkbox" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: var(--bg-input); border-radius: 0.5rem; cursor: pointer; opacity: 0.5; pointer-events: none;">
+                            <input type="checkbox" id="hitl-researcher" value="researcher" checked disabled style="width: 1rem; height: 1rem; accent-color: var(--primary);">
+                            <span style="font-size: 0.875rem; font-weight: 500;">🔬 Researcher</span>
+                        </label>
+                        <label class="stage-checkbox" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: var(--bg-input); border-radius: 0.5rem; cursor: pointer; opacity: 0.5; pointer-events: none;">
+                            <input type="checkbox" id="hitl-planner" value="planner" checked disabled style="width: 1rem; height: 1rem; accent-color: var(--primary);">
+                            <span style="font-size: 0.875rem; font-weight: 500;">📋 Planner</span>
+                        </label>
+                        <label class="stage-checkbox" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: var(--bg-input); border-radius: 0.5rem; cursor: pointer; opacity: 0.5; pointer-events: none;">
+                            <input type="checkbox" id="hitl-writer" value="writer" checked disabled style="width: 1rem; height: 1rem; accent-color: var(--primary);">
+                            <span style="font-size: 0.875rem; font-weight: 500;">✍️ Writer</span>
+                        </label>
+                        <label class="stage-checkbox" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: var(--bg-input); border-radius: 0.5rem; cursor: pointer; opacity: 0.5; pointer-events: none;">
+                            <input type="checkbox" id="hitl-reviewer" value="reviewer" checked disabled style="width: 1rem; height: 1rem; accent-color: var(--primary);">
+                            <span style="font-size: 0.875rem; font-weight: 500;">🔍 Reviewer</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- ─── Model Configuration ──────────────────────────────── -->
+                <div class="model-config-section">
+                    <div class="model-section-header">
+                        <div>
+                            <div class="model-heading">Model</div>
+                            <div class="model-description">Choose one model for the whole workflow, or customize individual stages.</div>
+                        </div>
+                        <button type="button" id="fetchModelsBtn" class="model-fetch-btn" title="Refresh available models">
+                            <svg id="fetchModelsIcon" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                            <span id="fetchModelsText">Refresh models</span>
+                        </button>
+                    </div>
+
+                    <label class="model-default-label" for="model-default">Use the same model for all stages</label>
+                    <div class="model-default-control">
+                        <select id="model-default" class="model-select" aria-label="Model for all stages"></select>
+                    </div>
+
+                    <details class="model-advanced">
+                        <summary>Customize each stage</summary>
+                        <div id="modelContainer" class="model-grid-minimal">
+                            <label class="model-card-minimal" for="model-researcher">
+                                <span class="model-min-title">Researcher</span>
+                                <select id="model-researcher" class="model-select" data-default-model="gpt-4.1-mini" aria-label="Researcher model"></select>
+                            </label>
+                            <label class="model-card-minimal" for="model-planner">
+                                <span class="model-min-title">Planner</span>
+                                <select id="model-planner" class="model-select" data-default-model="gpt-4o-mini" aria-label="Planner model"></select>
+                            </label>
+                            <label class="model-card-minimal" for="model-writer">
+                                <span class="model-min-title">Writer</span>
+                                <select id="model-writer" class="model-select" data-default-model="gpt-4.1" aria-label="Writer model"></select>
+                            </label>
+                            <label class="model-card-minimal" for="model-reviewer">
+                                <span class="model-min-title">Reviewer</span>
+                                <select id="model-reviewer" class="model-select" data-default-model="gpt-4o" aria-label="Reviewer model"></select>
+                            </label>
+                        </div>
+                    </details>
+
+                    <!-- Loading overlay -->
+                    <div id="modelLoadingIndicator" class="model-loading-overlay hidden">
+                        <div class="model-loading-content">
+                            <div class="spinner-sm"></div>
+                            <span>Fetching available models…</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        </div>
+    </div>
+
+    <div class="generate-action">
+        <button id="generateBtn" class="btn-primary">
+            <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            <span id="generateBtnText">Generate</span>
+        </button>
+        <button id="stopGenerationBtn" class="btn-stop-generation hidden" type="button">
+            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+            </svg>
+            <span>Stop generating</span>
+        </button>
+    </div>
+
+    <!-- ─── Error Display ───────────────────────────────────────── -->
+    <div id="errorArea" class="error-alert hidden">
+        <span style="color: var(--red-text); font-size: 1.25rem;">⚠</span>
+        <div>
+            <div style="color: #b91c1c; font-weight: 600;">Error</div>
+            <div id="errorText" style="color: var(--red-text); font-size: 0.875rem; margin-top: 0.25rem;"></div>
+        </div>
+    </div>
+
+    <!-- ─── Output / Results Section (Shown from the beginning) ─── -->
+    <div id="resultArea" class="card no-padding" role="region" aria-label="Article workspace">
+        <!-- Tab Bar (Larger tabs with current selected model) -->
+        <div class="tabs-header">
+            <button class="tab-btn active" data-target="researchPane" data-step="researcher">
+                <span class="tab-icon">🔬</span>
+                <span class="tab-label">Research</span>
+                <span class="tab-model-pill" id="tab-model-researcher">gpt-4.1-mini</span>
+            </button>
+            <button class="tab-btn" data-target="outlinePane" data-step="planner">
+                <span class="tab-icon">📋</span>
+                <span class="tab-label">Outline</span>
+                <span class="tab-model-pill" id="tab-model-planner">gpt-4o-mini</span>
+            </button>
+            <button class="tab-btn" data-target="draftPane" data-step="writer">
+                <span class="tab-icon">✍️</span>
+                <span class="tab-label">Draft</span>
+                <span class="tab-model-pill" id="tab-model-writer">gpt-4.1</span>
+            </button>
+            <button class="tab-btn" data-target="reviewPane" data-step="reviewer">
+                <span class="tab-icon">🔍</span>
+                <span class="tab-label">Review</span>
+                <span class="tab-model-pill" id="tab-model-reviewer">gpt-4o</span>
+            </button>
+            <button class="tab-btn" data-target="finalPane">
+                <span class="tab-icon">✨</span>
+                <span class="tab-label">Final</span>
+                <span class="tab-model-pill pill-final">Ready</span>
+            </button>
+        </div>
+
+            <!-- Pipeline Explanation Header Bar -->
+            <div id="pipelineExplainer" class="pipeline-explainer">
+                <div class="pipeline-explainer-badge" id="explainerBadge">Stage 1 of 4</div>
+                <div class="pipeline-explainer-content">
+                    <h3 class="pipeline-explainer-title" id="explainerTitle">🔬 Researcher Agent</h3>
+                    <p class="pipeline-explainer-desc" id="explainerDesc">
+                        Searches live web sources when enabled, summarizes supplied references, and lists the URLs used for verification.
+                    </p>
+                </div>
+            </div>
+
+            <div id="reviewBadgeContainer" class="hidden" style="padding: 0.75rem 1.5rem 0;"></div>
+            
+            <!-- Tab Content -->
+            <div class="tab-content">
+                <!-- ── Research Tab ── -->
+                <div id="researchPane" class="tab-pane prose">
+                    <div class="stage-placeholder">
+                        <div class="placeholder-icon">🔬</div>
+                        <h4>Researcher Agent Pipeline</h4>
+                        <p>Searches the live web when enabled and lists the sources used. Research findings will appear here.</p>
+                        <span class="placeholder-hint">Click <strong>Generate</strong> to run the editorial pipeline</span>
+                    </div>
+                </div>
+
+                <!-- ── Outline Tab ── -->
+                <div id="outlinePane" class="tab-pane hidden">
+                    <div class="stage-placeholder">
+                        <div class="placeholder-icon">📋</div>
+                        <h4>Planner Agent Pipeline</h4>
+                        <p>Transforms raw research into an engaging, structured blog outline with headings, key points, and SEO metadata.</p>
+                        <span class="placeholder-hint">Awaiting pipeline execution</span>
+                    </div>
+                </div>
+
+                <!-- ── Draft Tab ── -->
+                <div id="draftPane" class="tab-pane hidden prose">
+                    <div class="stage-placeholder">
+                        <div class="placeholder-icon">✍️</div>
+                        <h4>Writer Agent Pipeline</h4>
+                        <p>Synthesizes the outline and gathered facts into a comprehensive, high-quality blog post with engaging flow.</p>
+                        <span class="placeholder-hint">Awaiting pipeline execution</span>
+                    </div>
+                </div>
+                
+                <!-- ── Review Tab ── -->
+                <div id="reviewPane" class="tab-pane hidden">
+                    <div class="stage-placeholder">
+                        <div class="placeholder-icon">🔍</div>
+                        <h4>Reviewer Agent Pipeline</h4>
+                        <p>Critiques readability, scores quality (0–100), and provides actionable editorial suggestions to polish the post.</p>
+                        <span class="placeholder-hint">Awaiting pipeline execution</span>
+                    </div>
+                </div>
+                
+                <!-- ── Final Article Tab ── -->
+                <div id="finalPane" class="tab-pane hidden prose">
+                    <div class="stage-placeholder">
+                        <div class="placeholder-icon">✨</div>
+                        <h4>Final Published Article</h4>
+                        <p>The complete, polished blog post ready for distribution, featuring a one-click copy tool.</p>
+                        <span class="placeholder-hint">Awaiting pipeline completion</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+    <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+{
+  "name": "langgraph-multi-agent-post-generator-ts",
+  "version": "1.0.0",
+  "description": "Standalone LangGraph Editorial Pipeline",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "ts-node src/server.ts"
+  },
+  "dependencies": {
+    "@langchain/core": "^0.2.31",
+    "@langchain/langgraph": "^0.2.0",
+    "@langchain/openai": "^0.2.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "openai": "^7.23.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  }
+}
