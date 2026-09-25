@@ -64,7 +64,23 @@ Run it with the project `.env` file:
 docker run --rm -p 3001:3001 --env-file .env agentic-article-generator
 ```
 
-Open [http://localhost:3001](http://localhost:3001). Stop the container with `Ctrl+C`. If you omit `--rm`, list containers with `docker ps` and stop one with `docker stop <container_id>`.
+Open [http://localhost:3001](http://localhost:3001).
+
+When done.
+ Stop the container with `Ctrl+C`. Because the run command uses `--rm`, Docker removes the container automatically when it stops. To remove the image when you're finished, run:
+
+```bash
+docker image rm agentic-article-generator
+```
+
+If you omitted `--rm`, 
+list containers with `docker ps -a`
+Stop the container (if it is currently running):
+`docker stop <container_id_or_name>`
+ remove the stopped container with:
+ `docker rm <container_id>`
+ Delete the image:
+ `docker rmi agentic-article-generator`
 
 ## Available npm Scripts
 
