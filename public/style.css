@@ -1143,7 +1143,7 @@ ins.diff-added, del.diff-removed { padding: 0 0.08em; border-radius: 0.2em; }
   color: var(--primary);
   font-weight: 700;
 }
-  
+
 #resultArea > .tabs-header > .tab-btn.active .tab-model-pill {
   background: #fff;
   color: var(--primary);
@@ -1152,12 +1152,12 @@ ins.diff-added, del.diff-removed { padding: 0 0.08em; border-radius: 0.2em; }
 }
 
 /* ── Step-done ── */
-#resultArea > .tabs-header > .tab-btn.step-done .tab-icon {
+/* #resultArea > .tabs-header > .tab-btn.step-done .tab-icon {
   background: #16a34a;
   border-color: #16a34a;
   color: #fff;
   box-shadow: 0 2px 6px rgba(22, 163, 74, 0.25);
-}
+} */
 
 /* ── Step-error ── */
 #resultArea > .tabs-header > .tab-btn.step-error .tab-icon {

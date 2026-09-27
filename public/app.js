@@ -260,7 +260,7 @@ async function loadModels(force = false) {
 // Update the collapsed configuration header summary badges
 function updateConfigPreview() {
     if (previewWebSearch && webSearchCheck) {
-        previewWebSearch.textContent = `Researcher: ${webSearchCheck.checked ? 'ON' : 'OFF'}`;
+        previewWebSearch.textContent = `Web Search: ${webSearchCheck.checked ? 'ON' : 'OFF'}`;
         previewWebSearch.classList.toggle('is-on', webSearchCheck.checked);
         previewWebSearch.classList.toggle('is-off', !webSearchCheck.checked);
     }
@@ -642,8 +642,7 @@ generateBtn.addEventListener('click', async () => {
     if (!topic) return alert("Please enter a topic");
 
     const sources = sourcesInput.value.split("\n").map(s => s.trim()).filter(s => s);
-    const hasSearch = webSearchCheck.checked || sources.length > 0;
-    
+
     // Get Human in the Loop settings
     const hitlEnabled = humanInLoopCheck.checked;
     
@@ -656,7 +655,7 @@ generateBtn.addEventListener('click', async () => {
     // Reset Draft tab badge
     resetDraftTabBadge();
 
-    hitlActiveSteps = hasSearch ? PIPELINE_STEPS : PIPELINE_STEPS.filter(s => s.key !== "researcher");
+    hitlActiveSteps = PIPELINE_STEPS;
     renderPipeline();
     
     hitlActiveSteps.forEach(s => updateStepState(s.key, 'idle'));
@@ -726,6 +725,10 @@ async function consumeStream(response) {
 
             if (event.node === "complete") {
                 if (event.data?.article) finalArticle = event.data.article;
+                if (event.data?.researchSummary) {
+                    researchPane.innerHTML = marked.parse(event.data.researchSummary);
+                }
+                PIPELINE_STEPS.forEach(step => updateStepState(step.key, 'done'));
                 if (finalArticle) {
                     finalPane.innerHTML = renderCopyArticleButton() + marked.parse(finalArticle);
                 }
@@ -1046,7 +1049,7 @@ function renderInitialPlaceholders() {
             <div class="stage-placeholder">
                 <div class="placeholder-icon">🔬</div>
                 <h4>Researcher Agent Pipeline</h4>
-            <p>Searches the live web when enabled and lists the sources used. Research findings will appear here.</p>
+                <p>Uses live web sources when enabled. When web search is off, the Researcher uses the language model's general knowledge and any references you provide. Findings and source details will appear here.</p>
                 <span class="placeholder-hint">Click <strong>Generate</strong> to run the editorial pipeline</span>
             </div>`;
     }

@@ -358,23 +358,43 @@ export function verifySuggestions(
 
 export async function researcherNode(state: EditorialStateType, config?: { signal?: AbortSignal }): Promise<Partial<EditorialStateType>> {
   const openai = new OpenAI();
-  const response = await openai.responses.parse({
-    model: state.modelConfig.researcher,
-    instructions: [
-      state.enableWebSearch
-        ? 'You are an expert research analyst. Search the live web for current, authoritative information about the topic.'
-        : 'You are an expert research analyst. Use only supplied source material and your general knowledge; do not imply that you searched the web.',
-      'Use the provided references where relevant. Base factual claims on retrieved pages or supplied source text, and distinguish uncertain or conflicting evidence.',
-      'Only include verbatim quotes found in retrieved pages or supplied source text. Never invent quotations, URLs, or sources.',
-      'Return a useful synthesis, key facts, and quotes that can be traced to the retrieved or supplied sources.'
-    ].join(' '),
-    input: `Topic: ${state.topic}\n\nProvided references and data:\n${state.sources.length ? state.sources.join('\n') : 'None'}`,
-    tools: state.enableWebSearch ? [{ type: 'web_search', search_context_size: 'medium' }] : [],
-    tool_choice: state.enableWebSearch ? 'required' : 'none',
-    include: state.enableWebSearch ? ['web_search_call.action.sources'] : [],
-    text: { format: zodTextFormat(ResearchSummarySchema, 'research_summary') },
-    max_output_tokens: 3000,
-  }, { signal: config?.signal });
+  const maxAttempts = 3;
+  let response: any;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      response = await openai.responses.parse({
+        model: state.modelConfig.researcher,
+        instructions: [
+          state.enableWebSearch
+            ? 'You are an expert research analyst. Search the live web for current, authoritative information about the topic.'
+            : 'You are an expert research analyst. Use only supplied source material and your general knowledge; do not imply that you searched the web.',
+          'Use the provided references where relevant. Base factual claims on retrieved pages or supplied source text, and distinguish uncertain or conflicting evidence.',
+          'Only include verbatim quotes found in retrieved pages or supplied source text. Never invent quotations, URLs, or sources.',
+          'Return a useful synthesis, key facts, and quotes that can be traced to the retrieved or supplied sources.',
+          'You MUST respond with strictly valid JSON matching the required schema. Do not include any extra text, markdown fences, or trailing characters outside the JSON object.'
+        ].join(' '),
+        input: `Topic: ${state.topic}\n\nProvided references and data:\n${state.sources.length ? state.sources.join('\n') : 'None'}`,
+        tools: state.enableWebSearch ? [{ type: 'web_search', search_context_size: 'medium' }] : [],
+        tool_choice: state.enableWebSearch ? 'required' : 'none',
+        include: state.enableWebSearch ? ['web_search_call.action.sources'] : [],
+        text: { format: zodTextFormat(ResearchSummarySchema, 'research_summary') },
+        max_output_tokens: 4096,
+      }, { signal: config?.signal });
+      break; // success
+    } catch (err: any) {
+      if (config?.signal?.aborted) throw err;
+      const isParseError = err instanceof SyntaxError || /invalid structured output/i.test(err?.message ?? '');
+      if (!isParseError || attempt === maxAttempts) {
+        if (isParseError) {
+          throw new Error(`Researcher failed to return valid JSON after ${maxAttempts} attempts: ${err.message}`);
+        }
+        throw err;
+      }
+      console.warn(`Researcher structured output parse failed (attempt ${attempt}/${maxAttempts}), retrying...`);
+    }
+  }
+
   const result = response.output_parsed as z.infer<typeof ResearchSummarySchema> | null;
   if (!result) throw new Error('Researcher did not return a structured research summary.');
   const internetSources = collectWebSources(response);
@@ -595,28 +615,33 @@ function getNextNode(state: EditorialState): EditorialStage | null {
 function withProgress(
   stage: EditorialStage,
   node: (state: EditorialState, config?: { signal?: AbortSignal }) => Promise<EditorialStateUpdate>,
-  onStageStart?: (stage: EditorialStage) => void
+  onStageStart?: (stage: EditorialStage) => void,
+  onStageDone?: (stage: EditorialStage, update: EditorialStateUpdate) => void
 ) {
   return async (state: EditorialState, config?: RunnableConfig): Promise<EditorialStateUpdate> => {
     onStageStart?.(stage);
     const update = await node(state, { signal: config?.signal });
+    onStageDone?.(stage, update);
     return { ...update, currentStage: stage };
   };
 }
 
-export function buildEditorialGraph(onStageStart?: (stage: EditorialStage) => void) {
+export function buildEditorialGraph(
+  onStageStart?: (stage: EditorialStage) => void,
+  onStageDone?: (stage: EditorialStage, update: EditorialStateUpdate) => void
+) {
   return new StateGraph(EditorialStateAnnotation)
-    .addNode("researcher", withProgress("researcher", researcherNode, onStageStart))
-    .addNode("planner", withProgress("planner", plannerNode, onStageStart))
-    .addNode("writer", withProgress("writer", writerNode, onStageStart))
-    .addNode("reviewer", withProgress("reviewer", reviewerNode, onStageStart))
+    .addNode("researcher", withProgress("researcher", researcherNode, onStageStart, onStageDone))
+    .addNode("planner", withProgress("planner", plannerNode, onStageStart, onStageDone))
+    .addNode("writer", withProgress("writer", writerNode, onStageStart, onStageDone))
+    .addNode("reviewer", withProgress("reviewer", reviewerNode, onStageStart, onStageDone))
     .addNode("pause", (state: EditorialState): EditorialStateUpdate => ({
       pausedStage: state.currentStage,
       nextNode: getNextNode(state),
     }))
     .addConditionalEdges(START, (state: EditorialState) => {
       if (state.startNode) return state.startNode;
-      return state.enableWebSearch !== false || state.sources.length > 0 ? "researcher" : "planner";
+      return "researcher";
     }, {
       researcher: "researcher",
       planner: "planner",

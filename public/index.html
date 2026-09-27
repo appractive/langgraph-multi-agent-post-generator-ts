@@ -53,7 +53,7 @@ A book, report, or citation title"></textarea>
                     <span class="config-title">Configuration</span>
                 </div>
                 <div class="config-preview-summary" id="configPreviewSummary">
-                    <span class="config-summary-pill is-on" id="previewWebSearch">Researcher: ON</span>
+                    <span class="config-summary-pill is-on" id="previewWebSearch">Web Search: ON</span>
                     <span class="config-summary-pill is-off" id="previewHitl">HITL: OFF</span>
                     <span class="config-summary-pill is-mixed" id="previewModel">Models: Mixed</span>
                 </div>
@@ -62,17 +62,17 @@ A book, report, or citation title"></textarea>
             <!-- Collapsible Body (Hidden / closed by default) -->
             <div id="configBody" class="config-body hidden">
                 <div class="config-stack" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
-                    <!-- ─── Researcher Toggle ───────────────────────────────── -->
+                    <!-- ─── Web Search Toggle ───────────────────────────────── -->
                     <div class="toggle-wrapper flex items-center justify-between">
                         <div class="flex items-center gap-3">
                             <span style="font-size: 1.25rem;">🌐</span>
                             <div>
-                                <div style="font-weight: 600; font-size: 0.875rem;">Researcher Agent</div>
-                                <div class="text-xs" style="color: var(--text-muted)">Search the live web and your supplied references when enabled.</div>
+                                <div style="font-weight: 600; font-size: 0.875rem;">Live Web Search</div>
+                                <div class="text-xs" style="color: var(--text-muted)">When off, the Researcher still summarizes your topic and any supplied references using model knowledge.</div>
                             </div>
                         </div>
                         <label class="switch">
-                            <input type="checkbox" id="webSearch" aria-label="Run the Researcher Agent" checked>
+                            <input type="checkbox" id="webSearch" aria-label="Enable live web search" checked>
                             <span class="slider"></span>
                         </label>
                     </div>
@@ -225,7 +225,7 @@ A book, report, or citation title"></textarea>
                     <div class="stage-placeholder">
                         <div class="placeholder-icon">🔬</div>
                         <h4>Researcher Agent Pipeline</h4>
-                        <p>Searches the live web when enabled and lists the sources used. Research findings will appear here.</p>
+                        <p>Uses live web sources when enabled. When web search is off, the Researcher uses the language model's general knowledge and any references you provide. Findings and source details will appear here.</p>
                         <span class="placeholder-hint">Click <strong>Generate</strong> to run the editorial pipeline</span>
                     </div>
                 </div>

@@ -174,6 +174,8 @@ async function runGraph(res: any, state: EditorialState, signal: AbortSignal) {
     const graph = buildEditorialGraph(stage => {
       activeStage = stage;
       sendSse(res, { node: stage, status: "running" });
+    }, (stage, update) => {
+      sendSse(res, { node: stage, status: "done", data: update });
     });
     const updates = await graph.stream(state, { streamMode: "updates", signal });
 
@@ -196,13 +198,15 @@ async function runGraph(res: any, state: EditorialState, signal: AbortSignal) {
           });
         } else if (EDITORIAL_STAGES.has(nodeName as EditorialStage)) {
           activeStage = nodeName as EditorialStage;
-          sendSse(res, { node: nodeName, status: "done", data: nodeUpdate });
         }
       }
     }
 
     if (!paused && !signal.aborted && !res.destroyed && !res.writableEnded) {
-      sendSse(res, { node: "complete", data: { article: currentState.article } });
+      sendSse(res, {
+        node: "complete",
+        data: { article: currentState.article, researchSummary: currentState.researchSummary },
+      });
     }
   } catch (error: any) {
     if (!signal.aborted && !res.destroyed && !res.writableEnded) {
