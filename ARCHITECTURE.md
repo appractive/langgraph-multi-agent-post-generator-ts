@@ -18,7 +18,10 @@ flowchart TD
         researchCheck -->|No| planner[Planner agent<br/>Creates article outline]
         researcher --> planner
 
-        planner --> writer[Writer agent<br/>Drafts article in Markdown]
+        planner --> hitlCheck{Human review enabled?}
+        hitlCheck -->|Yes| pause[Pause for planner outline review]
+        hitlCheck -->|No| writer[Writer agent<br/>Drafts article in Markdown]
+        pause -->|Approve or edit| writer
         writer --> reviewer[Reviewer agent<br/>Edits article and scores it]
         reviewer --> qualityCheck{Post-review score below 75<br/>and retry available?}
         qualityCheck -->|Yes: one retry| writer
@@ -42,4 +45,4 @@ flowchart TD
     browser -->|Abort active request| server
 ```
 
-`/api/models`, `/api/generate`, and `/api/generate/continue` are routes served by this app; they are not OpenAI endpoints. Human-in-the-loop pauses can be enabled for selected stages. The score-based rewrite path is limited to one additional writer/reviewer pass.
+`/api/models`, `/api/generate`, and `/api/generate/continue` are routes served by this app; they are not OpenAI endpoints. Human-in-the-loop pauses can be enabled only after the planner creates the outline and before the writer starts. The score-based rewrite path is limited to one additional writer/reviewer pass.

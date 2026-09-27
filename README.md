@@ -42,7 +42,7 @@ To run the compiled server locally instead, use `npm run build` followed by `npm
 
    **Researcher Agent:** Searches the live web when enabled. Turn it off to skip live web search; if you provide sources, the researcher still uses those references. With web search off and no supplied sources, research is skipped and the workflow starts at planning.
 
-   **Human in the Loop:** Pauses the workflow at selected stages so you can inspect or edit the output before approving it. Choose the checkpoints you want; all stages are selected by default when this option is enabled. Use **Approve & Continue** to proceed or **Stop Pipeline** to end the run.
+   **Human in the Loop:** When enabled, pauses after the Planner creates the outline so you can review or edit it before the Writer drafts the article. Use **Approve & Continue** to proceed or **Stop Pipeline** to end the run.
 
    **Models:** Select one model for all stages or expand **Customize each stage** to choose separate researcher, planner, writer, and reviewer models. Use **Refresh models** to reload models available to your API key. Model availability depends on your OpenAI account.
 4. Select **Generate**. Follow the Research, Outline, Draft, and Review tabs as the pipeline runs. If the post-review quality score is below 75, the workflow performs one additional writing and review pass.

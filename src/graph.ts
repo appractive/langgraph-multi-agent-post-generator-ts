@@ -365,9 +365,6 @@ function withProgress(
 }
 
 export function buildEditorialGraph(onStageStart?: (stage: EditorialStage) => void) {
-  const pauseIfSelected = (stage: EditorialStage, nextStage: EditorialStage) => (state: EditorialState) =>
-    state.hitlStages.includes(stage) ? "pause" : nextStage;
-
   return new StateGraph(EditorialStateAnnotation)
     .addNode("researcher", withProgress("researcher", researcherNode, onStageStart))
     .addNode("planner", withProgress("planner", plannerNode, onStageStart))
@@ -386,23 +383,14 @@ export function buildEditorialGraph(onStageStart?: (stage: EditorialStage) => vo
       writer: "writer",
       reviewer: "reviewer",
     })
-    .addConditionalEdges("researcher", pauseIfSelected("researcher", "planner"), {
-      pause: "pause",
-      planner: "planner",
-    })
-    .addConditionalEdges("planner", pauseIfSelected("planner", "writer"), {
-      pause: "pause",
-      writer: "writer",
-    })
-    .addConditionalEdges("writer", pauseIfSelected("writer", "reviewer"), {
-      pause: "pause",
-      reviewer: "reviewer",
-    })
-    .addConditionalEdges("reviewer", (state: EditorialState) => {
-      if (state.hitlStages.includes("reviewer")) return "pause";
-      return getNextNode(state) ?? "done";
-    }, {
-      pause: "pause",
+    .addEdge("researcher", "planner")
+    .addConditionalEdges("planner", (state: EditorialState) =>
+      state.hitlStages.includes("planner") ? "pause" : "writer", {
+        pause: "pause",
+        writer: "writer",
+      })
+    .addEdge("writer", "reviewer")
+    .addConditionalEdges("reviewer", (state: EditorialState) => getNextNode(state) ?? "done", {
       writer: "writer",
       done: END,
     })

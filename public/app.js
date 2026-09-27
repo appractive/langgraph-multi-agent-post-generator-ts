@@ -3,10 +3,6 @@ const topicInput = document.getElementById('topic');
 const sourcesInput = document.getElementById('sources');
 const webSearchCheck = document.getElementById('webSearch');
 const humanInLoopCheck = document.getElementById('humanInLoop');
-const hitlResearcher = document.getElementById('hitl-researcher');
-const hitlPlanner = document.getElementById('hitl-planner');
-const hitlWriter = document.getElementById('hitl-writer');
-const hitlReviewer = document.getElementById('hitl-reviewer');
 const generateBtn = document.getElementById('generateBtn');
 const generateBtnText = document.getElementById('generateBtnText');
 const stopGenerationBtn = document.getElementById('stopGenerationBtn');
@@ -270,16 +266,9 @@ function updateConfigPreview() {
     }
 
     if (previewHitl && humanInLoopCheck) {
-        if (!humanInLoopCheck.checked) {
-            previewHitl.textContent = 'HITL: OFF';
-            previewHitl.classList.add('is-off');
-            previewHitl.classList.remove('is-on');
-        } else {
-            const stages = getHitlStages();
-            previewHitl.textContent = `HITL: ${stages.length} ${stages.length === 1 ? 'stage' : 'stages'}`;
-            previewHitl.classList.toggle('is-on', stages.length > 0);
-            previewHitl.classList.toggle('is-off', stages.length === 0);
-        }
+        previewHitl.textContent = humanInLoopCheck.checked ? 'HITL: PLANNER' : 'HITL: OFF';
+        previewHitl.classList.toggle('is-on', humanInLoopCheck.checked);
+        previewHitl.classList.toggle('is-off', !humanInLoopCheck.checked);
     }
 
     if (previewModel) {
@@ -367,33 +356,13 @@ loadModels();
 // Initialize pipeline explanation on the starting tab
 updatePipelineExplainer('researchPane');
 
-// Human in the Loop toggle & initial setup
-function updateHitlUI() {
-    const stagesContainer = document.getElementById('humanInLoopStages');
-    if (!stagesContainer) return;
-    const isChecked = humanInLoopCheck.checked;
-    const checkboxes = stagesContainer.querySelectorAll('input[type="checkbox"]');
-    checkboxes.forEach(cb => {
-        cb.disabled = !isChecked;
-        cb.parentElement.style.opacity = isChecked ? '1' : '0.5';
-        cb.parentElement.style.pointerEvents = isChecked ? 'auto' : 'none';
-    });
-}
-
 if (humanInLoopCheck) {
-    humanInLoopCheck.addEventListener('change', () => {
-        updateHitlUI();
-        updateConfigPreview();
-    });
+    humanInLoopCheck.addEventListener('change', updateConfigPreview);
 }
-updateHitlUI();
 
 if (webSearchCheck) {
     webSearchCheck.addEventListener('change', updateConfigPreview);
 }
-[hitlResearcher, hitlPlanner, hitlWriter, hitlReviewer].forEach(cb => {
-    if (cb) cb.addEventListener('change', updateConfigPreview);
-});
 updateConfigPreview();
 
 tabBtns.forEach(btn => {
@@ -677,7 +646,6 @@ generateBtn.addEventListener('click', async () => {
     
     // Get Human in the Loop settings
     const hitlEnabled = humanInLoopCheck.checked;
-    const hitlStages = getHitlStages();
     
     // UI Reset
     const controller = beginGenerationRequest();
@@ -704,7 +672,7 @@ generateBtn.addEventListener('click', async () => {
                 sources,
                 enableWebSearch: webSearchCheck.checked,
                 hitlEnabled,
-                hitlStages,
+                hitlStages: hitlEnabled ? ['planner'] : [],
                 modelConfig: {
                     researcher: document.getElementById('model-researcher').value,
                     planner: document.getElementById('model-planner').value,
@@ -748,7 +716,11 @@ async function consumeStream(response) {
             }
 
             if (event.node === "hitl_pause") {
-                renderHitlPane(event.data);
+                if (event.data?.stage === 'planner') {
+                    renderHitlPane(event.data);
+                } else {
+                    resumePipeline(event.data?.fullState, event.data?.nextNode);
+                }
                 return; // stream ends here
             }
 
@@ -894,6 +866,7 @@ function renderHitlPane(hitlData) {
                 </div>
             </div>
             ${editorHtml}
+            <div id="hitl-validation-error" class="hitl-validation-error hidden" role="alert" aria-live="assertive"></div>
             <div class="hitl-actions">
                 <button id="hitl-stop" class="hitl-btn hitl-btn-stop">✕ Stop Pipeline</button>
                 <button id="hitl-approve" class="hitl-btn hitl-btn-approve">✓ Approve & Continue</button>
@@ -907,7 +880,16 @@ function renderHitlPane(hitlData) {
     const stopBtn = document.getElementById('hitl-stop');
 
     approveBtn.addEventListener('click', () => {
-        const edited = collectEditedState(stage, fullState);
+        let edited;
+        try {
+            edited = collectEditedState(stage, fullState);
+        } catch (error) {
+            const validationError = document.getElementById('hitl-validation-error');
+            validationError.textContent = error.message;
+            validationError.classList.remove('hidden');
+            return;
+        }
+
         // Replace the HITL editor with the (edited) stage output right away
         renderStageOutputOnly(stage, edited);
         resumePipeline(edited, hitlData.nextNode);
@@ -928,12 +910,7 @@ function collectEditedState(stage, fullState) {
     if (stage === 'researcher') {
         newState.researchSummary = textarea.value;
     } else if (stage === 'planner') {
-        try {
-            newState.outline = JSON.parse(textarea.value);
-        } catch (e) {
-            // Keep original if invalid JSON
-            alert("Outline JSON is invalid — continuing with the original outline.");
-        }
+        newState.outline = parseEditedOutline(textarea.value);
     } else if (stage === 'writer' || stage === 'reviewer') {
         newState.article = textarea.value;
         if (stage === 'reviewer' && newState.review) {
@@ -942,6 +919,46 @@ function collectEditedState(stage, fullState) {
     }
 
     return newState;
+}
+
+function parseEditedOutline(value) {
+    let outline;
+    try {
+        outline = JSON.parse(value);
+    } catch (error) {
+        throw new Error(`Invalid outline JSON: ${error.message}`);
+    }
+
+    if (!outline || typeof outline !== 'object' || Array.isArray(outline)) {
+        throw new Error('The outline must be a JSON object.');
+    }
+
+    const issues = [];
+    if (typeof outline.seoTitle !== 'string') issues.push('seoTitle must be a string');
+    if (typeof outline.metaDescription !== 'string') issues.push('metaDescription must be a string');
+    if (!Array.isArray(outline.sections)) {
+        issues.push('sections must be an array');
+    } else {
+        outline.sections.forEach((section, index) => {
+            if (!section || typeof section !== 'object' || Array.isArray(section)) {
+                issues.push(`sections[${index}] must be an object`);
+                return;
+            }
+            if (typeof section.heading !== 'string') issues.push(`sections[${index}].heading must be a string`);
+            if (!Array.isArray(section.keyPoints) || !section.keyPoints.every(point => typeof point === 'string')) {
+                issues.push(`sections[${index}].keyPoints must be an array of strings`);
+            }
+        });
+    }
+    if (typeof outline.estimatedReadingTime !== 'number' || !Number.isFinite(outline.estimatedReadingTime)) {
+        issues.push('estimatedReadingTime must be a number');
+    }
+
+    if (issues.length > 0) {
+        throw new Error(`The outline format is invalid: ${issues.join('; ')}.`);
+    }
+
+    return outline;
 }
 
 async function resumePipeline(fullState, nextNode) {
@@ -985,8 +1002,8 @@ async function resumePipeline(fullState, nextNode) {
             body: JSON.stringify({
                 fullState,
                 nextNode,
-                hitlEnabled: humanInLoopCheck.checked,
-                hitlStages: getHitlStages()
+                hitlEnabled: false,
+                hitlStages: []
             }),
             signal: controller.signal
         });
@@ -1126,16 +1143,6 @@ function escapeHtml(str) {
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
-}
-
-function getHitlStages() {
-    if (!humanInLoopCheck.checked) return [];
-    const stages = [];
-    if (hitlResearcher.checked) stages.push('researcher');
-    if (hitlPlanner.checked) stages.push('planner');
-    if (hitlWriter.checked) stages.push('writer');
-    if (hitlReviewer.checked) stages.push('reviewer');
-    return stages;
 }
 
 function copyArticle() {

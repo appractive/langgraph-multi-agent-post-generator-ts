@@ -8,7 +8,10 @@ flowchart TD
     researchCheck -->|Yes| researcher[Researcher<br/>Finds and summarizes evidence]
     researchCheck -->|No| planner[Planner<br/>Creates the article outline]
     researcher --> planner
-    planner --> writer[Writer<br/>Drafts the article]
+    planner --> hitlCheck{Human review enabled?}
+    hitlCheck -->|Yes| pause[Pause for outline review or edits]
+    hitlCheck -->|No| writer[Writer<br/>Drafts the article]
+    pause -->|Approve and continue| writer
     writer --> reviewer[Reviewer<br/>Edits and scores the article]
     reviewer --> retryCheck{Score below 75<br/>and retry available?}
     retryCheck -->|Yes: one extra pass| writer
@@ -19,4 +22,4 @@ flowchart TD
     reviewer -. node update .-> state
 ```
 
-The graph starts at the researcher when web search is enabled or sources are supplied; otherwise it starts at the planner. Each node returns a partial state update. A score below 75 after review routes to one additional writer/reviewer pass. If a selected human-in-the-loop stage is reached, the graph's pause node returns the stage, next node, and full state to the browser over SSE. After approval or edits, the browser posts the state and next node to `/api/generate/continue`, which starts a new graph invocation at that node. The app does not configure a persistent LangGraph checkpointer. **Stop generating** aborts an in-flight graph request.
+The graph starts at the researcher when web search is enabled or sources are supplied; otherwise it starts at the planner. Each node returns a partial state update. When Human in the Loop is enabled, the graph pauses only after the planner creates the outline and before writing begins. The pause node returns the outline, next node, and full state to the browser over SSE. After approval or edits, the browser posts the state and next node to `/api/generate/continue`, which starts a new graph invocation at that node. A score below 75 after review routes to one additional writer/reviewer pass. The app does not configure a persistent LangGraph checkpointer. **Stop generating** aborts an in-flight graph request.

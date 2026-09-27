@@ -229,7 +229,7 @@ app.post('/api/generate', async (req, res) => {
     if (!res.writableEnded) controller.abort();
   });
 
-  const { hitlEnabled, hitlStages = [], ...rawState } = req.body;
+  const { hitlEnabled, hitlStages: _hitlStages, ...rawState } = req.body;
 
   const state: EditorialState = {
     ...rawState,
@@ -243,7 +243,7 @@ app.post('/api/generate', async (req, res) => {
     review: null,
     retryCount: 0,
     reviewScores: [],
-    hitlStages: hitlEnabled ? hitlStages : [],
+    hitlStages: hitlEnabled ? ["planner"] : [],
     startNode: null,
     currentStage: null,
     pausedStage: null,
@@ -263,7 +263,7 @@ app.post('/api/generate/continue', async (req, res) => {
     if (!res.writableEnded) controller.abort();
   });
 
-  const { fullState, nextNode, hitlEnabled, hitlStages = [] } = req.body;
+  const { fullState, nextNode, hitlEnabled, hitlStages: _hitlStages } = req.body;
 
   if (!nextNode) {
     // Nothing left to run
@@ -280,7 +280,7 @@ app.post('/api/generate/continue', async (req, res) => {
 
   const state: EditorialState = {
     ...fullState,
-    hitlStages: hitlEnabled ? hitlStages : [],
+    hitlStages: hitlEnabled ? ["planner"] : [],
     startNode: nextNode,
   };
 

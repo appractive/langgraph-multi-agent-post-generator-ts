@@ -79,37 +79,19 @@ A book, report, or citation title"></textarea>
 
                     <!-- ─── Human in the Loop ────────────────────────────────── -->
                     <div style="padding: 1rem; background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 0.75rem;">
-                        <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center justify-between">
                             <div class="flex items-center gap-3">
                                 <span style="font-size: 1.25rem;">👤</span>
                                 <div>
-                                <div style="font-weight: 600; font-size: 0.875rem;">Human in the Loop</div>
-                                <div class="text-xs" style="color: var(--text-muted)">Pause after each selected stage to review and approve before continuing</div>
+                                    <div style="font-weight: 600; font-size: 0.875rem;">Human in the Loop: Planner</div>
+                                    <div class="text-xs" style="color: var(--text-muted)">Pause after the Planner creates the outline so you can review or edit it before drafting</div>
+                                </div>
                             </div>
+                            <label class="switch">
+                                <input type="checkbox" id="humanInLoop" aria-label="Enable planner outline review">
+                                <span class="slider"></span>
+                            </label>
                         </div>
-                        <label class="switch">
-                            <input type="checkbox" id="humanInLoop" aria-label="Enable human review checkpoints">
-                            <span class="slider"></span>
-                        </label>
-                    </div>
-                    
-                    <div id="humanInLoopStages" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem;">
-                        <label class="stage-checkbox" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: var(--bg-input); border-radius: 0.5rem; cursor: pointer; opacity: 0.5; pointer-events: none;">
-                            <input type="checkbox" id="hitl-researcher" value="researcher" checked disabled style="width: 1rem; height: 1rem; accent-color: var(--primary);">
-                            <span style="font-size: 0.875rem; font-weight: 500;">🔬 Researcher</span>
-                        </label>
-                        <label class="stage-checkbox" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: var(--bg-input); border-radius: 0.5rem; cursor: pointer; opacity: 0.5; pointer-events: none;">
-                            <input type="checkbox" id="hitl-planner" value="planner" checked disabled style="width: 1rem; height: 1rem; accent-color: var(--primary);">
-                            <span style="font-size: 0.875rem; font-weight: 500;">📋 Planner</span>
-                        </label>
-                        <label class="stage-checkbox" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: var(--bg-input); border-radius: 0.5rem; cursor: pointer; opacity: 0.5; pointer-events: none;">
-                            <input type="checkbox" id="hitl-writer" value="writer" checked disabled style="width: 1rem; height: 1rem; accent-color: var(--primary);">
-                            <span style="font-size: 0.875rem; font-weight: 500;">✍️ Writer</span>
-                        </label>
-                        <label class="stage-checkbox" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: var(--bg-input); border-radius: 0.5rem; cursor: pointer; opacity: 0.5; pointer-events: none;">
-                            <input type="checkbox" id="hitl-reviewer" value="reviewer" checked disabled style="width: 1rem; height: 1rem; accent-color: var(--primary);">
-                            <span style="font-size: 0.875rem; font-weight: 500;">🔍 Reviewer</span>
-                        </label>
                     </div>
                 </div>
 
