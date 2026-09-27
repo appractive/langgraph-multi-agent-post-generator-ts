@@ -725,9 +725,11 @@ async function consumeStream(response) {
             }
 
             if (event.node === "complete") {
+                if (event.data?.article) finalArticle = event.data.article;
                 if (finalArticle) {
                     finalPane.innerHTML = renderCopyArticleButton() + marked.parse(finalArticle);
                 }
+                activateFinalTab();
                 return;
             }
 
