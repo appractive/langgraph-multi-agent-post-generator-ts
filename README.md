@@ -52,6 +52,12 @@ Live web research uses OpenAI's web search tool and may incur API charges. Revie
 
 ## Run with Docker
 
+Copy `.env.example` to `.env` in the project root, then replace the API key placeholder:
+
+   ```dotenv
+   OPENAI_API_KEY=your_openai_api_key
+   ```
+
 Build the image from the project root:
 
 ```bash
