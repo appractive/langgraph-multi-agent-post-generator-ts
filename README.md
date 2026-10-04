@@ -1,5 +1,7 @@
 # Agentic Article Generator
 
+![Agentic Article Generator Demo](images/b2otdr.gif)
+
 Agentic Article Generator turns a topic into a publish-ready article through a LangGraph `StateGraph` workflow. The researcher gathers context, the planner creates an outline, the writer drafts the article, and the reviewer edits and scores it. LangChain provides chat-model integration. You can monitor each stage, choose models, and pause the workflow for human review.
 
 ## Requirements
