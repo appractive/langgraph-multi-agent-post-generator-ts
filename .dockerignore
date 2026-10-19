@@ -24,3 +24,8 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 
+# Local state and eval output must not enter the image
+data
+.tmp
+evals/report.json
+tests

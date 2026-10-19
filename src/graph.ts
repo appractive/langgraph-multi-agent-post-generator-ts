@@ -181,6 +181,11 @@ function collectWebSources(response: ParsedOpenAIResponse): Array<{ title: strin
   return Array.from(sources, ([url, title]) => ({ title, url }));
 }
 
+/** Number of billable web-search tool calls in a Responses API result. */
+function countWebSearchCalls(response: ParsedOpenAIResponse): number {
+  return (response.output || []).filter(item => item.type === 'web_search_call').length;
+}
+
 function renderInternetSource(source: { id: number; title: string; url?: string }): string {
   if (!source.url) return '';
   try {
@@ -289,6 +294,12 @@ export async function researcherNode(
         outputTokens: parsedResponse.usage?.output_tokens ?? 0,
       };
       ctx.budget.record("researcher", state.modelConfig.researcher, usage);
+
+      // Web-search tool calls are billed separately from tokens, so they count
+      // against the run budget on their own (WEB_SEARCH_USD_PER_CALL).
+      const searchCalls = countWebSearchCalls(parsedResponse);
+      const searchUsd = Number(process.env.WEB_SEARCH_USD_PER_CALL) || 0;
+      for (let i = 0; i < searchCalls; i++) ctx.budget.recordWebSearch("researcher", searchUsd);
       log("info", "llm_call", {
         thread_id: ctx.threadId,
         node: "researcher",
@@ -405,19 +416,21 @@ export async function hitlReviewNode(
     outline: state.outline,
   };
   const resumed: unknown = interrupt(payload);
-  if (resumed && typeof resumed === "object") {
-    const parsed = OutlineSchema.safeParse(resumed);
-    if (parsed.success) {
-      return { outline: parsed.data };
-    }
+  const parsed = OutlineSchema.safeParse(resumed);
+  if (parsed.success) {
+    return { outline: parsed.data };
   }
+  log("warn", "hitl_resume_payload_rejected", {
+    reason: "resumed outline failed validation; keeping the planner's outline",
+    issues: parsed.error.issues.map(i => `${i.path.join(".") || "outline"}: ${i.message}`),
+  });
   return {};
 }
 
 // Every outline section heading and key point, numbered so the writer and the
 // coverage checker can refer to them. Human (HITL) edits land here, so each
 // entry is treated as a mandatory requirement, not a loose hint.
-function outlineRequirements(outline: Outline): string[] {
+export function outlineRequirements(outline: Outline): string[] {
   const items: string[] = [];
   for (const section of outline.sections) {
     const heading = section.heading.trim();
@@ -442,7 +455,7 @@ const CoverageSchema = z.object({
 });
 
 // Ask a checker which outline requirements the draft failed to cover.
-async function findMissingRequirements(
+export async function findMissingRequirements(
   model: string,
   requirements: string[],
   article: string,

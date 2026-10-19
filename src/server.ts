@@ -9,7 +9,6 @@ import { Command, isInterrupted } from '@langchain/langgraph';
 import {
   buildEditorialGraph,
   OutlineSchema,
-  sharedCheckpointer,
   type EditorialStage,
   type EditorialState,
   type HitlInterruptPayload,
@@ -19,12 +18,14 @@ import { INPUT_LIMITS } from './prompt-safety';
 import { ModelRegistry, parseAllowlist } from './models';
 import {
   log,
-  parsePricing,
+  resolvePricing,
   RunBudget,
   UsageCallbackHandler,
   type BudgetLimits,
+  type BudgetSnapshot,
 } from './observability';
-import { runRegistry, type RunContext } from './llm';
+import { configureRunStore, runRegistry, type RunContext } from './llm';
+import { createPersistence } from './persistence';
 
 dotenv.config();
 
@@ -41,11 +42,25 @@ app.get('/healthz', (_req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
+// Non-secret runtime facts the UI needs: whether to ask for an API key, and
+// whether paused runs survive a restart (ephemeral in-memory mode does not).
+app.get('/api/config', (_req, res) => {
+  res.json({
+    requiresApiKey: REQUIRES_API_KEY,
+    persistence: persistence.kind,
+    hitl: true,
+  });
+});
+
 // ─── Guardrails: Authentication, Rate Limiting & Budgets ────────────────────
 
+const CONFIGURED_API_KEY = process.env.APP_API_KEY?.trim();
+const REQUIRES_API_KEY = Boolean(CONFIGURED_API_KEY);
+
 function requireApiKey(req: Request, res: Response, next: NextFunction): void {
-  const configuredKey = process.env.APP_API_KEY?.trim();
-  if (!configuredKey) {
+  // Fail closed: an unprotected endpoint spends the operator's OpenAI credit,
+  // so production refuses to serve without APP_API_KEY (checked at startup).
+  if (!CONFIGURED_API_KEY) {
     next();
     return;
   }
@@ -58,7 +73,7 @@ function requireApiKey(req: Request, res: Response, next: NextFunction): void {
     : undefined;
   const candidate = bearer || headerKey || '';
 
-  const expectedBuf = Buffer.from(configuredKey, 'utf8');
+  const expectedBuf = Buffer.from(CONFIGURED_API_KEY, 'utf8');
   const candidateBuf = Buffer.from(candidate, 'utf8');
   if (
     expectedBuf.length !== candidateBuf.length ||
@@ -95,6 +110,18 @@ function getBudgetLimits(): BudgetLimits {
     ...(maxUsdRaw && Number.isFinite(maxUsdRaw) && maxUsdRaw > 0 ? { maxUsd: maxUsdRaw } : {}),
   };
 }
+
+// ─── Durable state (checkpointer + run store) ───────────────────────────────
+
+const budgetFactory = (restore?: BudgetSnapshot): RunBudget =>
+  new RunBudget(getBudgetLimits(), resolvePricing(process.env.MODEL_PRICING_JSON), restore);
+
+const persistence = createPersistence({
+  dataDir: process.env.DATA_DIR,
+  budgetFactory,
+});
+configureRunStore(persistence.runStore);
+const checkpointer = persistence.checkpointer;
 
 // ─── Model Registry ─────────────────────────────────────────────────────────
 
@@ -156,7 +183,7 @@ async function cleanupExpiredThreads(): Promise<void> {
   for (const ctx of runRegistry.values()) {
     if (now - ctx.lastActiveAt > THREAD_TTL_MS) {
       runRegistry.delete(ctx.threadId);
-      await sharedCheckpointer.deleteThread(ctx.threadId).catch(() => undefined);
+      await checkpointer.deleteThread(ctx.threadId).catch(() => undefined);
     }
   }
 }
@@ -195,7 +222,8 @@ async function streamEditorialRun(
       },
       (stage, update) => {
         sendSse(res, { node: stage, status: 'done', data: update });
-      }
+      },
+      checkpointer
     );
 
     const callbackHandler = new UsageCallbackHandler(ctx.budget, ctx.threadId);
@@ -233,6 +261,7 @@ async function streamEditorialRun(
     if (interruptedPayload) {
       ctx.status = 'paused';
       ctx.lastActiveAt = Date.now();
+      runRegistry.persist(ctx);
       log('info', 'run_paused', {
         thread_id: ctx.threadId,
         stage: interruptedPayload.stage,
@@ -250,6 +279,7 @@ async function streamEditorialRun(
     }
 
     ctx.status = 'done';
+    runRegistry.persist(ctx);
     const usage = ctx.budget.summary();
     log('info', 'run_complete', {
       thread_id: ctx.threadId,
@@ -266,7 +296,7 @@ async function streamEditorialRun(
       },
     });
     runRegistry.delete(ctx.threadId);
-    await sharedCheckpointer.deleteThread(ctx.threadId).catch(() => undefined);
+    await checkpointer.deleteThread(ctx.threadId).catch(() => undefined);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     log('error', 'run_failed', {
@@ -284,7 +314,7 @@ async function streamEditorialRun(
     }
     if (ctx.status !== 'paused') {
       runRegistry.delete(ctx.threadId);
-      await sharedCheckpointer.deleteThread(ctx.threadId).catch(() => undefined);
+      await checkpointer.deleteThread(ctx.threadId).catch(() => undefined);
     }
   } finally {
     if (!res.writableEnded) res.end();
@@ -328,7 +358,7 @@ app.post('/api/generate', generateLimiter, requireApiKey, async (req, res) => {
   });
 
   const threadId = crypto.randomUUID();
-  const budget = new RunBudget(getBudgetLimits(), parsePricing(process.env.MODEL_PRICING_JSON));
+  const budget = budgetFactory();
   const ctx: RunContext = {
     threadId,
     budget,
@@ -374,6 +404,19 @@ app.post('/api/generate/continue', generateLimiter, requireApiKey, async (req, r
     return;
   }
 
+  // The run row can outlive its checkpoint (e.g. the state was pruned), so
+  // verify the graph can actually be resumed before opening the event stream.
+  const snapshot = await buildEditorialGraph(undefined, undefined, checkpointer).getState({
+    configurable: { thread_id: threadId },
+  });
+  if (!snapshot || !snapshot.next || snapshot.next.length === 0) {
+    runRegistry.delete(threadId);
+    res.status(409).json({
+      error: 'The saved state for this paused run is no longer available. Start a new generation.',
+    });
+    return;
+  }
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -394,8 +437,44 @@ app.post('/api/generate/continue', generateLimiter, requireApiKey, async (req, r
 
 export { app };
 
-if (require.main === module) {
-  app.listen(PORT, () => {
-    log('info', 'server_listening', { port: Number(PORT), url: `http://localhost:${PORT}` });
+// ─── Startup ────────────────────────────────────────────────────────────────
+
+const isProduction = process.env.NODE_ENV === 'production';
+
+// Fail closed: without a key every endpoint spends the operator's credit.
+if (isProduction && !REQUIRES_API_KEY) {
+  log('error', 'startup_refused', {
+    reason: 'NODE_ENV=production requires APP_API_KEY; refusing to start unauthenticated.',
   });
+  process.exit(1);
 }
+
+// Bind to loopback unless the operator opted into exposure with APP_API_KEY
+// (or set HOST explicitly, e.g. HOST=0.0.0.0 in a container).
+const HOST = process.env.HOST ?? (REQUIRES_API_KEY ? '0.0.0.0' : '127.0.0.1');
+
+const isMainModule =
+  typeof require !== 'undefined' && typeof module !== 'undefined' && require.main === module;
+
+if (isMainModule) {
+  const server = app.listen(Number(PORT), HOST, () => {
+    log('info', 'server_listening', {
+      port: Number(PORT),
+      host: HOST,
+      auth: REQUIRES_API_KEY ? 'api-key' : 'open',
+      persistence: persistence.kind,
+    });
+  });
+
+  const shutdown = (signal: string) => {
+    log('info', 'shutdown', { signal });
+    server.close(() => {
+      persistence.close();
+      process.exit(0);
+    });
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+}
+
+export { persistence };
