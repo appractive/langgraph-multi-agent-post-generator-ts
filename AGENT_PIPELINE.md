@@ -4,18 +4,17 @@
 
 ```mermaid
 flowchart TD
-    start((Start)) --> researchCheck{Web search enabled<br/>or sources supplied?}
-    researchCheck -->|Yes| researcher[Researcher<br/>Searches, summarises, indexes sources]
-    researchCheck -->|No| planner[Planner<br/>Creates the outline]
+    start(["Start"]) --> researchCheck{"Web search enabled<br/>or sources supplied?"}
+    researchCheck -->|"Yes"| researcher["Researcher<br/>Searches, summarises, indexes sources"]
+    researchCheck -->|"No"| planner["Planner<br/>Creates the outline"]
     researcher --> planner
-    planner --> hitlReview{hitl_review<br/>interrupt() when enabled}
-    hitlReview -->|Human approves or edits the outline| writer[Writer<br/>Drafts, checks coverage, revises]
-    writer --> reviewer[Reviewer<br/>Judge scores, editor edits, judge re-scores]
-    reviewer --> retryCheck{scoreAfter < 75<br/>and retryCount < 2?}
-    retryCheck -->|Yes| writer
-    retryCheck -->|No| finish((Complete))
-
-    researcher -.-> state[(State channels)]
+    planner --> hitlReview{"hitl_review node<br/>interrupt() when enabled"}
+    hitlReview -->|"Human approves or edits"| writer["Writer<br/>Drafts, checks coverage, revises"]
+    writer --> reviewer["Reviewer<br/>Judge scores, editor edits, judge re-scores"]
+    reviewer --> retryCheck{"scoreAfter below 75<br/>and a retry remaining?"}
+    retryCheck -->|"Yes"| writer
+    retryCheck -->|"No"| finish(["Complete"])
+    researcher -.-> state[("State channels")]
     planner -.-> state
     writer -.-> state
     reviewer -.-> state
