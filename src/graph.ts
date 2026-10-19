@@ -1,3 +1,18 @@
+/**
+ * The editorial graph: researcher → planner → hitl_review → writer → reviewer.
+ *
+ * Two design decisions are worth knowing before reading the nodes:
+ *
+ * 1. Editing and judging are separate models. A model that edits an article and
+ *    then scores its own edits inflates the score, which would make the
+ *    `scoreAfter < 75` revision gate meaningless.
+ * 2. Claims are verified, not trusted. Suggestions are checked against a real
+ *    word-level diff, citations are normalised to known sources, and the writer
+ *    is asked which outline points it missed before revising.
+ *
+ * All untrusted text (topic, sources, retrieved pages) is wrapped by
+ * `prompt-safety.ts` before it reaches a prompt.
+ */
 import {
   Annotation,
   StateGraph,
@@ -181,6 +196,11 @@ function collectWebSources(response: ParsedOpenAIResponse): Array<{ title: strin
   return Array.from(sources, ([url, title]) => ({ title, url }));
 }
 
+/** Number of billable web-search tool calls in a Responses API result. */
+function countWebSearchCalls(response: ParsedOpenAIResponse): number {
+  return (response.output || []).filter(item => item.type === 'web_search_call').length;
+}
+
 function renderInternetSource(source: { id: number; title: string; url?: string }): string {
   if (!source.url) return '';
   try {
@@ -289,6 +309,12 @@ export async function researcherNode(
         outputTokens: parsedResponse.usage?.output_tokens ?? 0,
       };
       ctx.budget.record("researcher", state.modelConfig.researcher, usage);
+
+      // Web-search tool calls are billed separately from tokens, so they count
+      // against the run budget on their own (WEB_SEARCH_USD_PER_CALL).
+      const searchCalls = countWebSearchCalls(parsedResponse);
+      const searchUsd = Number(process.env.WEB_SEARCH_USD_PER_CALL) || 0;
+      for (let i = 0; i < searchCalls; i++) ctx.budget.recordWebSearch("researcher", searchUsd);
       log("info", "llm_call", {
         thread_id: ctx.threadId,
         node: "researcher",
@@ -384,7 +410,7 @@ export async function plannerNode(
       content: `${UNTRUSTED_DATA_POLICY}\nCreate a detailed 4-6 section blog post outline grounded in the supplied research. Respond with strictly valid JSON only — no extra text, no trailing characters.`,
     },
     { role: "user", content: promptParts.join("\n\n") },
-  ], { ctx, node: "planner", repair: repairOutlineFromError, signal: config?.signal });
+  ], { ctx, node: "planner", repair: repairOutlineFromError, config });
 
   return { outline };
 }
@@ -405,19 +431,21 @@ export async function hitlReviewNode(
     outline: state.outline,
   };
   const resumed: unknown = interrupt(payload);
-  if (resumed && typeof resumed === "object") {
-    const parsed = OutlineSchema.safeParse(resumed);
-    if (parsed.success) {
-      return { outline: parsed.data };
-    }
+  const parsed = OutlineSchema.safeParse(resumed);
+  if (parsed.success) {
+    return { outline: parsed.data };
   }
+  log("warn", "hitl_resume_payload_rejected", {
+    reason: "resumed outline failed validation; keeping the planner's outline",
+    issues: parsed.error.issues.map(i => `${i.path.join(".") || "outline"}: ${i.message}`),
+  });
   return {};
 }
 
 // Every outline section heading and key point, numbered so the writer and the
 // coverage checker can refer to them. Human (HITL) edits land here, so each
 // entry is treated as a mandatory requirement, not a loose hint.
-function outlineRequirements(outline: Outline): string[] {
+export function outlineRequirements(outline: Outline): string[] {
   const items: string[] = [];
   for (const section of outline.sections) {
     const heading = section.heading.trim();
@@ -442,12 +470,12 @@ const CoverageSchema = z.object({
 });
 
 // Ask a checker which outline requirements the draft failed to cover.
-async function findMissingRequirements(
+export async function findMissingRequirements(
   model: string,
   requirements: string[],
   article: string,
   ctx: RunContext,
-  signal?: AbortSignal
+  config?: LangGraphRunnableConfig
 ): Promise<string[]> {
   if (requirements.length === 0) return [];
   const llm = createChatModel(model, { temperature: 0, maxTokens: 1024 }).withStructuredOutput(CoverageSchema);
@@ -461,7 +489,7 @@ async function findMissingRequirements(
       role: "user",
       content: `${wrapUntrusted("requirements", reqText, INPUT_LIMITS.researchPromptChars)}\n\n${wrapUntrusted("article", article, INPUT_LIMITS.articlePromptChars)}`,
     },
-  ], { ctx, node: "writer", signal });
+  ], { ctx, node: "writer", config });
   return Array.from(new Set(result.missing))
     .filter(n => n >= 1 && n <= requirements.length)
     .map(n => requirements[n - 1]);
@@ -497,11 +525,11 @@ export async function writerNode(
   let article = await invokeText(llm, [
     { role: "system", content: WRITER_SYSTEM_PROMPT },
     { role: "user", content: `${outlineBlock}\n\n${researchBlock}${feedbackBlock}` },
-  ], { ctx, node: "writer", signal: config?.signal });
+  ], { ctx, node: "writer", config });
 
   // Verify the draft honors every outline point; revise once if any are missing.
   const requirements = outlineRequirements(outline);
-  const missing = await findMissingRequirements(state.modelConfig.reviewer, requirements, article, ctx, config?.signal);
+  const missing = await findMissingRequirements(state.modelConfig.reviewer, requirements, article, ctx, config);
   if (missing.length > 0) {
     const missingBlock = wrapUntrusted("missing", missing.map(m => `- ${m}`).join("\n"), INPUT_LIMITS.feedbackChars);
     const draftBlock = wrapUntrusted("draft", article, INPUT_LIMITS.articlePromptChars);
@@ -514,7 +542,7 @@ export async function writerNode(
         role: "user",
         content: `${outlineBlock}\n\n${researchBlock}\n\nYour draft omitted these required outline points. Cover each one explicitly in the matching section:\n${missingBlock}\n\n${draftBlock}`,
       },
-    ], { ctx, node: "writer", signal: config?.signal })).trim();
+    ], { ctx, node: "writer", config })).trim();
     if (revised) article = revised;
   }
 
@@ -532,7 +560,7 @@ async function evaluateWithJudge(
   outline: Outline | null,
   research: Research | null,
   ctx: RunContext,
-  signal?: AbortSignal
+  config?: LangGraphRunnableConfig
 ): Promise<{ score: number; criteria: RubricCriterionResult[]; feedback: string[] }> {
   const llm = createChatModel(judgeModel, { temperature: 0, maxTokens: 2048 })
     .withStructuredOutput(RubricJudgementSchema);
@@ -559,7 +587,7 @@ ${RUBRIC_ANCHORS}
 Return one entry for every criterion id with a concrete 1–2 sentence rationale and an integer score from 0 to 4. Be strict and objective.`,
     },
     { role: "user", content: userParts.join("\n\n") },
-  ], { ctx, node: "reviewer", signal });
+  ], { ctx, node: "reviewer", config });
 
   const { score, criteria } = scoreRubric(judgement);
   return { score, criteria, feedback: rubricFeedback(criteria) };
@@ -585,7 +613,7 @@ export async function reviewerNode(
     state.outline,
     state.research,
     ctx,
-    config?.signal
+    config
   );
 
   // 2. Editor model performs targeted edits (does NOT assign scores)
@@ -627,7 +655,7 @@ CRITICAL RULES:
   ], {
     ctx,
     node: "reviewer",
-    signal: config?.signal,
+    config,
     repair: (err: unknown): z.infer<typeof ReviewEditSchema> | null => {
       const text = err instanceof Error ? err.message : "";
       const match = text.match(/Text:\s*"?\s*(\{[\s\S]*?\})\s*"?\s*\.?\s*Error:/) || text.match(/(\{[\s\S]*\})/);
@@ -673,7 +701,7 @@ CRITICAL RULES:
         state.outline,
         state.research,
         ctx,
-        config?.signal
+        config
       );
 
   const changedArticle = finalizedArticle.trim() !== state.article.trim();

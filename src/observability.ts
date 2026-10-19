@@ -46,6 +46,36 @@ interface NodeUsage extends TokenUsage {
   usd: number;
 }
 
+/**
+ * Default USD-per-1M-token prices ([input, output]) so the cost budget is
+ * enforced out of the box. Prices change: verify against
+ * https://openai.com/api/pricing/ and override with MODEL_PRICING_JSON.
+ * Longest matching prefix wins, so "gpt-4.1" also covers dated snapshots.
+ */
+export const DEFAULT_PRICING: PricingTable = {
+  "gpt-4o": [2.5, 10],
+  "gpt-4o-mini": [0.15, 0.6],
+  "gpt-4.1": [2, 8],
+  "gpt-4.1-mini": [0.4, 1.6],
+  "gpt-4.1-nano": [0.1, 0.4],
+  "gpt-4-turbo": [10, 30],
+};
+
+/** Serialised budget state, persisted so a resumed run keeps its spend. */
+export interface BudgetSnapshot {
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  usd: number;
+  webSearches: number;
+  byNode: Record<string, NodeUsage>;
+}
+
+/** Operator pricing merges over the defaults; explicit entries always win. */
+export function resolvePricing(json: string | undefined): PricingTable {
+  return { ...DEFAULT_PRICING, ...parsePricing(json) };
+}
+
 export function parsePricing(json: string | undefined): PricingTable {
   if (!json) return {};
   try {
@@ -82,9 +112,49 @@ export class RunBudget {
   inputTokens = 0;
   outputTokens = 0;
   usd = 0;
+  webSearches = 0;
   readonly byNode: Record<string, NodeUsage> = {};
 
-  constructor(private readonly limits: BudgetLimits, private readonly pricing: PricingTable = {}) {}
+  constructor(
+    private readonly limits: BudgetLimits,
+    private readonly pricing: PricingTable = {},
+    restore?: BudgetSnapshot
+  ) {
+    if (!restore) return;
+    this.calls = restore.calls;
+    this.inputTokens = restore.inputTokens;
+    this.outputTokens = restore.outputTokens;
+    this.usd = restore.usd;
+    this.webSearches = restore.webSearches ?? 0;
+    for (const [node, usage] of Object.entries(restore.byNode ?? {})) {
+      this.byNode[node] = { ...usage };
+    }
+  }
+
+  /** Plain-object state, persisted with the run so a resume keeps its spend. */
+  snapshot(): BudgetSnapshot {
+    return {
+      calls: this.calls,
+      inputTokens: this.inputTokens,
+      outputTokens: this.outputTokens,
+      usd: this.usd,
+      webSearches: this.webSearches,
+      byNode: this.byNode,
+    };
+  }
+
+  /**
+   * Records one billable web-search tool call. Search calls are priced
+   * separately from tokens, so they are tracked (and capped) on their own.
+   */
+  recordWebSearch(node: string, usdPerCall: number): void {
+    this.webSearches++;
+    this.calls++;
+    this.usd += usdPerCall;
+    const entry = (this.byNode[node] ??= { calls: 0, inputTokens: 0, outputTokens: 0, usd: 0 });
+    entry.calls++;
+    entry.usd += usdPerCall;
+  }
 
   get totalTokens(): number {
     return this.inputTokens + this.outputTokens;
@@ -123,6 +193,7 @@ export class RunBudget {
       inputTokens: this.inputTokens,
       outputTokens: this.outputTokens,
       totalTokens: this.totalTokens,
+      webSearches: this.webSearches,
       estimatedUsd: Number(this.usd.toFixed(6)),
       byNode: this.byNode,
     };

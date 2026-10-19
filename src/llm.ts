@@ -1,9 +1,10 @@
 import type { BaseLanguageModelInput } from "@langchain/core/language_models/base";
 import type { BaseMessageLike } from "@langchain/core/messages";
-import type { Runnable } from "@langchain/core/runnables";
+import type { Runnable, RunnableConfig } from "@langchain/core/runnables";
 import { ChatOpenAI } from "@langchain/openai";
 import { isReasoningModel } from "./models";
-import type { RunBudget } from "./observability";
+import { RunBudget } from "./observability";
+import { RunStore, type RunContext, type RunStatus } from "./run-store";
 
 // ─── Run context ────────────────────────────────────────────────────────────
 //
@@ -11,26 +12,32 @@ import type { RunBudget } from "./observability";
 // LangGraph thread_id instead of in graph state or `configurable`, so they are
 // never serialized into checkpoints or exposed to clients.
 
-export interface RunContext {
-  threadId: string;
-  budget: RunBudget;
-  createdAt: number;
-  lastActiveAt: number;
-  status: "running" | "paused" | "done";
+export type { RunContext, RunStatus };
+
+// The registry is a RunStore: in-memory by default, SQLite-backed in the
+// server so paused runs survive a restart. `configureRunStore` swaps it once at
+// startup, before any graph run begins.
+let activeStore = new RunStore(null, () => new RunBudget({ maxTotalTokens: 1, maxLlmCalls: 1 }));
+
+export function configureRunStore(store: RunStore): void {
+  activeStore = store;
 }
 
-const runContexts = new Map<string, RunContext>();
+export function getRunStore(): RunStore {
+  return activeStore;
+}
 
 export const runRegistry = {
-  set(ctx: RunContext): void { runContexts.set(ctx.threadId, ctx); },
-  get(threadId: string): RunContext | undefined { return runContexts.get(threadId); },
-  delete(threadId: string): void { runContexts.delete(threadId); },
-  values(): IterableIterator<RunContext> { return runContexts.values(); },
+  set: (ctx: RunContext): void => activeStore.set(ctx),
+  get: (threadId: string): RunContext | undefined => activeStore.get(threadId),
+  delete: (threadId: string): void => activeStore.delete(threadId),
+  values: (): IterableIterator<RunContext> => activeStore.values(),
+  persist: (ctx: RunContext): void => activeStore.persist(ctx),
 };
 
 export function requireRunContext(config: { configurable?: Record<string, unknown> } | undefined): RunContext {
   const threadId = config?.configurable?.thread_id;
-  const ctx = typeof threadId === "string" ? runContexts.get(threadId) : undefined;
+  const ctx = typeof threadId === "string" ? activeStore.get(threadId) : undefined;
   if (!ctx) throw new Error("No run context for this thread; the run may have expired.");
   return ctx;
 }
@@ -68,6 +75,18 @@ export interface InvokeOptions {
   ctx: RunContext;
   node: string;
   signal?: AbortSignal;
+  /**
+   * The LangGraph run config. Passing it is what propagates the run's
+   * callbacks (usage tracking, tracing) down to the model call — invoking with
+   * only `{ signal }` replaces that config and silently disables them.
+   */
+  config?: RunnableConfig;
+}
+
+/** Run config for a model call: inherits callbacks/tracing from the graph. */
+function runConfig(opts: InvokeOptions): RunnableConfig {
+  const signal = opts.signal ?? opts.config?.signal;
+  return { ...(opts.config ?? {}), ...(signal ? { signal } : {}) };
 }
 
 function errorMessage(err: unknown): string {
@@ -81,7 +100,7 @@ export async function invokeText(
   opts: InvokeOptions
 ): Promise<string> {
   opts.ctx.budget.assertCanSpend(opts.node);
-  const response = await llm.invoke(messages, { signal: opts.signal });
+  const response = await llm.invoke(messages, runConfig(opts));
   return response.text;
 }
 
@@ -98,7 +117,7 @@ export async function invokeStructuredWithRetry<T>(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     opts.ctx.budget.assertCanSpend(opts.node);
     try {
-      return await llm.invoke(currentMessages, { signal: opts.signal });
+      return await llm.invoke(currentMessages, runConfig(opts));
     } catch (err: unknown) {
       if (opts.signal?.aborted) throw err;
       if (attempt === maxAttempts) {

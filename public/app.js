@@ -1,8 +1,24 @@
+/**
+ * Browser client for the editorial pipeline.
+ *
+ * The server streams Server-Sent Events; this file renders each stage into its
+ * tab, offers the human-review editor when the run pauses, and keeps the
+ * thread id so a paused run can be resumed.
+ *
+ * Two rules matter here:
+ *   - every model-produced string reaches the DOM through renderMarkdown(),
+ *     which sanitises and degrades to escaped text if the CDN is unavailable;
+ *   - the server API key lives in sessionStorage for this tab only and is never
+ *     written anywhere else.
+ */
+
 // DOM Elements
 const topicInput = document.getElementById('topic');
 const sourcesInput = document.getElementById('sources');
 const webSearchCheck = document.getElementById('webSearch');
 const humanInLoopCheck = document.getElementById('humanInLoop');
+const apiKeyInput = document.getElementById('apiKey');
+const apiKeySection = document.getElementById('apiKeySection');
 const generateBtn = document.getElementById('generateBtn');
 const generateBtnText = document.getElementById('generateBtnText');
 const stopGenerationBtn = document.getElementById('stopGenerationBtn');
@@ -235,7 +251,7 @@ async function loadModels(force = false) {
     if (modelLoadingIndicator) modelLoadingIndicator.classList.remove('hidden');
     try {
         const url = force ? `/api/models?t=${Date.now()}` : '/api/models';
-        const res = await fetch(url);
+        const res = await fetch(url, { headers: authHeaders() });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const models = await res.json();
 
@@ -350,8 +366,8 @@ if (DEFAULT_MODEL_SELECT) {
     });
 }
 
-// Load models on page init
-loadModels();
+// Boot: learn whether this server needs an API key, then load models with it.
+void initServerConfig().finally(() => loadModels());
 
 // Initialize pipeline explanation on the starting tab
 updatePipelineExplainer('researchPane');
@@ -420,8 +436,8 @@ function getParagraphDiff(beforeArticle, afterArticle) {
     const columns = afterBlocks.length + 1;
     if ((beforeBlocks.length + 1) * columns > 1000000) {
         return [
-            beforeArticle ? `<div class="diff-block diff-block-removed">${DOMPurify.sanitize(marked.parse(beforeArticle))}</div>` : '',
-            afterArticle ? `<div class="diff-block diff-block-added">${DOMPurify.sanitize(marked.parse(afterArticle))}</div>` : ''
+            beforeArticle ? `<div class="diff-block diff-block-removed">${renderMarkdown(beforeArticle)}</div>` : '',
+            afterArticle ? `<div class="diff-block diff-block-added">${renderMarkdown(afterArticle)}</div>` : ''
         ];
     }
     const lengths = new Uint32Array((beforeBlocks.length + 1) * columns);
@@ -455,8 +471,8 @@ function getParagraphDiff(beforeArticle, afterArticle) {
     for (let index = 0; index < operations.length;) {
         const operation = operations[index];
         if (operation.type === 'same') {
-            beforeHtml.push(DOMPurify.sanitize(marked.parse(operation.before)));
-            afterHtml.push(DOMPurify.sanitize(marked.parse(operation.after)));
+            beforeHtml.push(renderMarkdown(operation.before));
+            afterHtml.push(renderMarkdown(operation.after));
             index++;
             continue;
         }
@@ -475,8 +491,8 @@ function getParagraphDiff(beforeArticle, afterArticle) {
             beforeHtml.push(oldVersion);
             afterHtml.push(newVersion);
         }
-        removed.slice(pairedCount).forEach(block => beforeHtml.push(`<div class="diff-block diff-block-removed">${DOMPurify.sanitize(marked.parse(block))}</div>`));
-        added.slice(pairedCount).forEach(block => afterHtml.push(`<div class="diff-block diff-block-added">${DOMPurify.sanitize(marked.parse(block))}</div>`));
+        removed.slice(pairedCount).forEach(block => beforeHtml.push(`<div class="diff-block diff-block-removed">${renderMarkdown(block)}</div>`));
+        added.slice(pairedCount).forEach(block => afterHtml.push(`<div class="diff-block diff-block-added">${renderMarkdown(block)}</div>`));
     }
 
     return [beforeHtml.join(''), afterHtml.join('')];
@@ -490,8 +506,8 @@ function renderInlineDiff(beforeBlock, afterBlock) {
 
     if (cellCount > 250000) {
         return [
-            `<div class="diff-block diff-block-removed">${DOMPurify.sanitize(marked.parse(beforeBlock))}</div>`,
-            `<div class="diff-block diff-block-added">${DOMPurify.sanitize(marked.parse(afterBlock))}</div>`
+            `<div class="diff-block diff-block-removed">${renderMarkdown(beforeBlock)}</div>`,
+            `<div class="diff-block diff-block-added">${renderMarkdown(afterBlock)}</div>`
         ];
     }
 
@@ -531,7 +547,7 @@ function renderInlineDiff(beforeBlock, afterBlock) {
     }
     flushChanges();
 
-    return [DOMPurify.sanitize(marked.parse(oldMarkdown)), DOMPurify.sanitize(marked.parse(newMarkdown))];
+    return [renderMarkdown(oldMarkdown), renderMarkdown(newMarkdown)];
 }
 
 function renderArticleComparison(beforeArticle, afterArticle, title, beforeLabel, afterLabel) {
@@ -625,12 +641,65 @@ function renderReview(reviewData, retryCount, originalArticle = '', reviewScores
     }
 }
 
+async function initServerConfig() {
+    const stored = sessionStorage.getItem(API_KEY_STORAGE);
+    if (stored && apiKeyInput) apiKeyInput.value = stored;
+
+    apiKeyInput?.addEventListener('input', () => rememberApiKey(apiKeyInput.value.trim()));
+
+    try {
+        const res = await fetch('/api/config');
+        if (!res.ok) return;
+        const cfg = await res.json();
+        serverRequiresApiKey = Boolean(cfg.requiresApiKey);
+        if (serverRequiresApiKey && apiKeySection) apiKeySection.classList.remove('hidden');
+        if (cfg.persistence === 'memory') {
+            console.warn('Server runs with ephemeral state: paused runs are lost on restart.');
+        }
+    } catch {
+        // A config probe failing is not fatal; the generate call reports the real error.
+    }
+}
+
 function resetDraftTabBadge() {
     const draftTabBtn = document.querySelector('.tab-btn[data-target="draftPane"]');
     if (draftTabBtn) {
         const retryBadge = draftTabBtn.querySelector('.tab-retry-badge');
         if (retryBadge) retryBadge.remove();
     }
+}
+
+// ─── Server access ─────────────────────────────────────────────────────────
+// The key lives in sessionStorage: present for this tab, gone when it closes.
+
+const API_KEY_STORAGE = 'editorial:apiKey';
+let serverRequiresApiKey = false;
+
+function apiKeyValue() {
+    return (apiKeyInput?.value || sessionStorage.getItem(API_KEY_STORAGE) || '').trim();
+}
+
+function authHeaders(extra) {
+    const headers = { ...(extra || {}) };
+    const key = apiKeyValue();
+    if (key) headers['Authorization'] = `Bearer ${key}`;
+    return headers;
+}
+
+function rememberApiKey(value) {
+    if (value) sessionStorage.setItem(API_KEY_STORAGE, value);
+    else sessionStorage.removeItem(API_KEY_STORAGE);
+}
+
+/** True when a failed response is an auth failure the user can fix. */
+function isAuthFailure(response) {
+    return response.status === 401 || response.status === 403;
+}
+
+function reportAuthFailure() {
+    if (apiKeySection) apiKeySection.classList.remove('hidden');
+    if (configBody?.classList.contains('hidden')) toggleConfigBtn?.click();
+    showError('This server requires an API key. Add it under Configuration → Server API key, then try again.');
 }
 
 // Human in the Loop state
@@ -665,7 +734,7 @@ generateBtn.addEventListener('click', async () => {
     try {
         const response = await fetch('/api/generate', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({
                 topic,
                 sources,
@@ -682,6 +751,10 @@ generateBtn.addEventListener('click', async () => {
         });
 
         if (!response.ok) {
+            if (isAuthFailure(response)) {
+                reportAuthFailure();
+                return;
+            }
             const errPayload = await response.json().catch(() => ({}));
             throw new Error(errPayload.error || `Request failed (HTTP ${response.status})`);
         }
@@ -726,11 +799,11 @@ async function consumeStream(response) {
             if (event.node === "complete") {
                 if (event.data?.article) finalArticle = event.data.article;
                 if (event.data?.researchSummary) {
-                    researchPane.innerHTML = DOMPurify.sanitize(marked.parse(event.data.researchSummary));
+                    researchPane.innerHTML = renderMarkdown(event.data.researchSummary);
                 }
                 PIPELINE_STEPS.forEach(step => updateStepState(step.key, 'done'));
                 if (finalArticle) {
-                    finalPane.innerHTML = renderCopyArticleButton() + DOMPurify.sanitize(marked.parse(finalArticle));
+                    finalPane.innerHTML = renderCopyArticleButton() + renderMarkdown(finalArticle);
                 }
                 activateFinalTab();
                 return;
@@ -763,14 +836,14 @@ function applyNodeOutput(nodeName, data) {
     if (!data) return;
 
     if (nodeName === "researcher" && data.researchSummary) {
-        researchPane.innerHTML = DOMPurify.sanitize(marked.parse(data.researchSummary));
+        researchPane.innerHTML = renderMarkdown(data.researchSummary);
     }
     if (nodeName === "planner" && data.outline) {
         renderOutlineInPane(outlinePane, data.outline);
         draftPane.innerHTML = `<h1>${escapeHtml(data.outline.seoTitle)}</h1><p style="color:var(--text-muted);font-style:italic;margin-bottom:1.5rem;">${escapeHtml(data.outline.metaDescription)}</p><div class="spinner"></div>`;
     }
     if (nodeName === "writer" && data.article) {
-        draftPane.innerHTML = DOMPurify.sanitize(marked.parse(data.article));
+        draftPane.innerHTML = renderMarkdown(data.article);
     }
     if (nodeName === "reviewer" && data.review) {
         finalArticle = data.article || finalArticle;
@@ -804,7 +877,7 @@ function renderHitlMarkdownEditor(value, rows = 18) {
                 <button type="button" class="active" data-hitl-mode="preview" aria-pressed="true">Preview</button>
                 <button type="button" data-hitl-mode="edit" aria-pressed="false">Edit Markdown</button>
             </div>
-            <div id="hitl-markdown-preview" class="prose hitl-markdown-preview">${DOMPurify.sanitize(marked.parse(value || ''))}</div>
+            <div id="hitl-markdown-preview" class="prose hitl-markdown-preview">${renderMarkdown(value || '')}</div>
             <textarea id="hitl-edit-area" class="hitl-textarea hidden" rows="${rows}">${escapeHtml(value || '')}</textarea>
         </div>
     `;
@@ -816,7 +889,7 @@ function setupHitlMarkdownEditor(pane) {
     if (!textarea || !preview) return;
 
     textarea.addEventListener('input', () => {
-        preview.innerHTML = DOMPurify.sanitize(marked.parse(textarea.value));
+        preview.innerHTML = renderMarkdown(textarea.value);
     });
 
     pane.querySelectorAll('[data-hitl-mode]').forEach(button => {
@@ -829,7 +902,7 @@ function setupHitlMarkdownEditor(pane) {
                 modeButton.classList.toggle('active', active);
                 modeButton.setAttribute('aria-pressed', String(active));
             });
-            if (previewMode) preview.innerHTML = DOMPurify.sanitize(marked.parse(textarea.value));
+            if (previewMode) preview.innerHTML = renderMarkdown(textarea.value);
         });
     });
 }
@@ -938,7 +1011,7 @@ async function resumePipeline(threadId, outline) {
     try {
         const response = await fetch('/api/generate/continue', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({
                 threadId,
                 outline
@@ -947,6 +1020,10 @@ async function resumePipeline(threadId, outline) {
         });
 
         if (!response.ok) {
+            if (isAuthFailure(response)) {
+                reportAuthFailure();
+                return;
+            }
             const errPayload = await response.json().catch(() => ({}));
             throw new Error(errPayload.error || `Resume failed (HTTP ${response.status})`);
         }
@@ -1035,11 +1112,11 @@ function renderStageOutputOnly(stage, fullState) {
     const pane = getHitlPaneForStage(stage);
 
     if (stage === 'researcher') {
-        pane.innerHTML = DOMPurify.sanitize(marked.parse(fullState.researchSummary || ''));
+        pane.innerHTML = renderMarkdown(fullState.researchSummary || '');
     } else if (stage === 'planner') {
         renderOutlineInPane(pane, fullState.outline);
     } else if (stage === 'writer') {
-        pane.innerHTML = DOMPurify.sanitize(marked.parse(fullState.article || ''));
+        pane.innerHTML = renderMarkdown(fullState.article || '');
     } else if (stage === 'reviewer') {
         renderStageOutputOnly('writer', fullState); // reviewer output lives in draft
         if (fullState.review) {
@@ -1079,6 +1156,17 @@ function showError(message) {
 
     const runningStep = document.querySelector('.tab-btn.step-running')?.dataset.step;
     if (runningStep) updateStepState(runningStep, 'error');
+}
+
+// Every model-produced string reaches the DOM through here. When the CDN
+// scripts for marked/DOMPurify are unavailable we fall back to escaped plain
+// text rather than throwing or inserting raw HTML.
+function renderMarkdown(markdown) {
+    const source = markdown == null ? '' : String(markdown);
+    if (typeof window.marked?.parse === 'function' && typeof window.DOMPurify?.sanitize === 'function') {
+        return window.DOMPurify.sanitize(window.marked.parse(source));
+    }
+    return `<pre style="white-space: pre-wrap;">${escapeHtml(source)}</pre>`;
 }
 
 function escapeHtml(str) {

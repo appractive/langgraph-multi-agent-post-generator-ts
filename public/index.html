@@ -96,6 +96,20 @@ A book, report, or citation title"></textarea>
                     </div>
                 </div>
 
+                <!-- ─── Server Access (API key) ───────────────────────────── -->
+                <div id="apiKeySection" class="config-stack hidden" style="margin-top: 1rem; padding: 1rem; background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 0.75rem;">
+                    <div class="flex items-center gap-3" style="margin-bottom: 0.5rem;">
+                        <span style="font-size: 1.25rem;">🔑</span>
+                        <div>
+                            <div style="font-weight: 600; font-size: 0.875rem;">Server API key</div>
+                            <div class="text-xs" style="color: var(--text-muted)">This server requires a key (<code>APP_API_KEY</code>). It is kept in this browser tab only and never stored on the server.</div>
+                        </div>
+                    </div>
+                    <input id="apiKey" type="password" class="input-text" autocomplete="off" spellcheck="false"
+                           placeholder="Paste the API key from your operator"
+                           aria-label="Server API key">
+                </div>
+
                 <!-- ─── Model Configuration ──────────────────────────────── -->
                 <div class="model-config-section">
                     <div class="model-section-header">

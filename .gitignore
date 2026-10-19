@@ -32,3 +32,7 @@ Desktop.ini
 
 # Ignore the entire .kilo folder by default
 .kilo/*
+
+# Local SQLite state (checkpoints + run budget) and eval output
+/data/
+/evals/report.json

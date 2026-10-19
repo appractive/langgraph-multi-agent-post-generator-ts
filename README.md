@@ -90,6 +90,70 @@ Stop the container (if it is currently running):
  Delete the image:
  `docker rmi agentic-article-generator`
 
+## Optional: protect the server with an API key
+
+Every generation spends OpenAI credit on the server's key, so set `APP_API_KEY` before exposing the app to anyone else:
+
+```dotenv
+APP_API_KEY=a-long-random-secret
+```
+
+The browser then asks for that key under **Configuration → Server API key**. The key is kept in `sessionStorage` for that tab only and sent as an `Authorization: Bearer` header; it is never stored on the server. The app probes `GET /api/config` on load to learn whether a key is needed.
+
+Guardrail behaviour:
+
+- With `NODE_ENV=production` and no `APP_API_KEY`, the server **refuses to start** rather than serving unauthenticated.
+- `HOST` defaults to `127.0.0.1` without a key and `0.0.0.0` with one (the container sets `HOST=0.0.0.0`).
+
+## Durable state and human-in-the-loop
+
+A run paused for human review is resumed from a LangGraph checkpoint, not from state held in the browser: the client only sends `{ threadId, outline }`, and the server reloads everything else from disk.
+
+State lives in SQLite (`data/editorial.sqlite` by default) and covers both the checkpoints and each run's budget:
+
+| Variable | Purpose |
+| --- | --- |
+| `DATA_DIR` | Directory for the SQLite file (Docker uses `/app/data`, a volume) |
+| `CHECKPOINT_DB` | Explicit path, or `memory` for ephemeral dev state (paused runs are then lost on restart) |
+
+Runs paused longer than 30 minutes are expired by a background sweep. A run whose checkpoint is missing returns **409** on resume instead of failing obscurely.
+
+## Cost and request guardrails
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MAX_REQUEST_TOKENS` | `120000` | Token ceiling per run |
+| `MAX_LLM_CALLS` | `15` | Call ceiling per run |
+| `MAX_REQUEST_USD` | unset | Cost ceiling per run, using `MODEL_PRICING_JSON` merged over the built-in prices |
+| `MODEL_ALLOWLIST` | unset | Comma-separated models the server will accept |
+| `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` | `20` / 15 min | Per-client generation limit |
+| `WEB_SEARCH_USD_PER_CALL` | `0` | Unit price for billable web-search calls, counted per run |
+
+The USD budget is active out of the box because default prices ship in `src/observability.ts`; override them if your contract differs. Budgets survive a pause and resume.
+
+## Tests and evals
+
+```bash
+npm test        # unit and HTTP route tests (no API calls)
+npm run typecheck   # type-check src, tests, and evals
+npm run eval        # run the golden corpus against the real pipeline
+```
+
+`npm test` is hermetic: it stubs auth, uses in-memory state, and never calls OpenAI.
+
+`npm run eval` needs `OPENAI_API_KEY` and runs the cases in `evals/cases.json` through the full graph, asserting deterministic properties rather than trusting a model's self-report:
+
+- every `[n]` citation resolves to a real source;
+- every percentage, decimal, year, and thousands-separated number appears in the research (a hallucinated statistic fails the run);
+- every outline key point is visibly covered;
+- injected instructions, `<script>`, `javascript:` and canaries never reach the article;
+- the independent judge's score clears `EVAL_MIN_SCORE` (default 60);
+- human-edited outlines and their odd requirements survive to the final article.
+
+Results land in `evals/report.json` with latency, tokens, and cost per case. Useful flags: `--limit N`, `--only <case-id>`.
+
+Unit tests for the checks themselves live in `tests/eval-checks.test.ts`, so the assertions can be trusted before spending money on a run.
+
 ## Available npm Scripts
 
 | Command | Purpose |
@@ -97,3 +161,6 @@ Stop the container (if it is currently running):
 | `npm run dev` | Run the TypeScript server for local development |
 | `npm run build` | Compile TypeScript into `dist/` |
 | `npm start` | Run the compiled server; build first |
+| `npm test` | Run the test suite (hermetic, no API calls) |
+| `npm run typecheck` | Type-check sources, tests, and evals |
+| `npm run eval` | Run the eval corpus against the real pipeline |

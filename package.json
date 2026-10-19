@@ -7,12 +7,16 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "dev": "ts-node src/server.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "eval": "ts-node evals/run.ts"
   },
   "dependencies": {
     "@langchain/core": "^1.2.18",
     "@langchain/langgraph": "^1.5.1",
+    "@langchain/langgraph-checkpoint-sqlite": "^1.1.0",
     "@langchain/openai": "^1.6.2",
+    "better-sqlite3": "^13.0.3",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "express-rate-limit": "^8.7.1",
@@ -21,8 +25,11 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/express": "^4.17.21",
     "@types/node": "^22.20.5",
+    "@types/supertest": "^7.2.1",
+    "supertest": "^7.3.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5",
     "vitest": "^4.1.12"
