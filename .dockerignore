@@ -1,0 +1,26 @@
+# Dependencies and build output
+node_modules
+dist
+build
+coverage
+*.tsbuildinfo
+
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+
+# Git, IDE, and agent tooling
+.git
+.gitignore
+.vscode
+.kilo
+
+# Logs and temporary files
+*.log
+npm-debug.log*
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+

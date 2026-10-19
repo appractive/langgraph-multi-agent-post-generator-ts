@@ -198,8 +198,8 @@ function populateModelSelect(selectEl, models, defaultValue) {
         selectEl.appendChild(optgroup);
     });
 
-    const targetVal = currentVal && selectEl.querySelector(`option[value="${currentVal}"]`) ? currentVal : defaultValue;
-    if (targetVal && selectEl.querySelector(`option[value="${targetVal}"]`)) {
+    const targetVal = currentVal && selectEl.querySelector(`option[value="${CSS.escape(currentVal)}"]`) ? currentVal : defaultValue;
+    if (targetVal && selectEl.querySelector(`option[value="${CSS.escape(targetVal)}"]`)) {
         selectEl.value = targetVal;
     } else if (isDefaultSelect) {
         selectEl.value = '';
@@ -420,8 +420,8 @@ function getParagraphDiff(beforeArticle, afterArticle) {
     const columns = afterBlocks.length + 1;
     if ((beforeBlocks.length + 1) * columns > 1000000) {
         return [
-            beforeArticle ? `<div class="diff-block diff-block-removed">${marked.parse(beforeArticle)}</div>` : '',
-            afterArticle ? `<div class="diff-block diff-block-added">${marked.parse(afterArticle)}</div>` : ''
+            beforeArticle ? `<div class="diff-block diff-block-removed">${DOMPurify.sanitize(marked.parse(beforeArticle))}</div>` : '',
+            afterArticle ? `<div class="diff-block diff-block-added">${DOMPurify.sanitize(marked.parse(afterArticle))}</div>` : ''
         ];
     }
     const lengths = new Uint32Array((beforeBlocks.length + 1) * columns);
@@ -455,8 +455,8 @@ function getParagraphDiff(beforeArticle, afterArticle) {
     for (let index = 0; index < operations.length;) {
         const operation = operations[index];
         if (operation.type === 'same') {
-            beforeHtml.push(marked.parse(operation.before));
-            afterHtml.push(marked.parse(operation.after));
+            beforeHtml.push(DOMPurify.sanitize(marked.parse(operation.before)));
+            afterHtml.push(DOMPurify.sanitize(marked.parse(operation.after)));
             index++;
             continue;
         }
@@ -475,8 +475,8 @@ function getParagraphDiff(beforeArticle, afterArticle) {
             beforeHtml.push(oldVersion);
             afterHtml.push(newVersion);
         }
-        removed.slice(pairedCount).forEach(block => beforeHtml.push(`<div class="diff-block diff-block-removed">${marked.parse(block)}</div>`));
-        added.slice(pairedCount).forEach(block => afterHtml.push(`<div class="diff-block diff-block-added">${marked.parse(block)}</div>`));
+        removed.slice(pairedCount).forEach(block => beforeHtml.push(`<div class="diff-block diff-block-removed">${DOMPurify.sanitize(marked.parse(block))}</div>`));
+        added.slice(pairedCount).forEach(block => afterHtml.push(`<div class="diff-block diff-block-added">${DOMPurify.sanitize(marked.parse(block))}</div>`));
     }
 
     return [beforeHtml.join(''), afterHtml.join('')];
@@ -490,8 +490,8 @@ function renderInlineDiff(beforeBlock, afterBlock) {
 
     if (cellCount > 250000) {
         return [
-            `<div class="diff-block diff-block-removed">${marked.parse(beforeBlock)}</div>`,
-            `<div class="diff-block diff-block-added">${marked.parse(afterBlock)}</div>`
+            `<div class="diff-block diff-block-removed">${DOMPurify.sanitize(marked.parse(beforeBlock))}</div>`,
+            `<div class="diff-block diff-block-added">${DOMPurify.sanitize(marked.parse(afterBlock))}</div>`
         ];
     }
 
@@ -510,8 +510,8 @@ function renderInlineDiff(beforeBlock, afterBlock) {
     let removed = '';
     let added = '';
     const flushChanges = () => {
-        if (removed) oldMarkdown += `<del class="diff-removed">${removed}</del>`;
-        if (added) newMarkdown += `<ins class="diff-added">${added}</ins>`;
+        if (removed) oldMarkdown += `<del class="diff-removed">${escapeHtml(removed)}</del>`;
+        if (added) newMarkdown += `<ins class="diff-added">${escapeHtml(added)}</ins>`;
         removed = '';
         added = '';
     };
@@ -531,7 +531,7 @@ function renderInlineDiff(beforeBlock, afterBlock) {
     }
     flushChanges();
 
-    return [marked.parse(oldMarkdown), marked.parse(newMarkdown)];
+    return [DOMPurify.sanitize(marked.parse(oldMarkdown)), DOMPurify.sanitize(marked.parse(newMarkdown))];
 }
 
 function renderArticleComparison(beforeArticle, afterArticle, title, beforeLabel, afterLabel) {
@@ -540,17 +540,17 @@ function renderArticleComparison(beforeArticle, afterArticle, title, beforeLabel
     return `
         <section class="article-comparison">
             <div class="article-comparison-heading">
-                <h3 class="article-comparison-title">${title}</h3>
+                <h3 class="article-comparison-title">${escapeHtml(title)}</h3>
                 <div class="diff-legend"><span><i class="diff-legend-swatch removed"></i>Removed</span><span><i class="diff-legend-swatch added"></i>Added</span></div>
             </div>
             ${hasTextChanges ? '' : '<p class="comparison-no-changes">The reviewer returned no text edits, so both versions are identical.</p>'}
             <div class="article-comparison-grid">
                 <section class="article-version">
-                    <h4 class="article-version-label"><span class="version-dot version-before"></span>${beforeLabel}</h4>
+                    <h4 class="article-version-label"><span class="version-dot version-before"></span>${escapeHtml(beforeLabel)}</h4>
                     <div class="prose article-version-content">${beforeHtml}</div>
                 </section>
                 <section class="article-version">
-                    <h4 class="article-version-label"><span class="version-dot version-after"></span>${afterLabel}</h4>
+                    <h4 class="article-version-label"><span class="version-dot version-after"></span>${escapeHtml(afterLabel)}</h4>
                     <div class="prose article-version-content">${afterHtml}</div>
                 </section>
             </div>
@@ -585,7 +585,7 @@ function renderReview(reviewData, retryCount, originalArticle = '', reviewScores
             <section class="review-score-history" aria-label="Previous review scores">
                 <h3>Previous quality scores</h3>
                 <ol>
-                    ${previousScores.map((score, index) => `<li><span>Review ${index + 1}</span><strong>${score.before ?? '—'} → ${score.after ?? '—'}</strong></li>`).join('')}
+                    ${previousScores.map((score, index) => `<li><span>Review ${index + 1}</span><strong>${escapeHtml(score.before ?? '—')} → ${escapeHtml(score.after ?? '—')}</strong></li>`).join('')}
                 </ol>
             </section>
         ` : ''}
@@ -671,7 +671,6 @@ generateBtn.addEventListener('click', async () => {
                 sources,
                 enableWebSearch: webSearchCheck.checked,
                 hitlEnabled,
-                hitlStages: hitlEnabled ? ['planner'] : [],
                 modelConfig: {
                     researcher: document.getElementById('model-researcher').value,
                     planner: document.getElementById('model-planner').value,
@@ -681,6 +680,11 @@ generateBtn.addEventListener('click', async () => {
             }),
             signal: controller.signal
         });
+
+        if (!response.ok) {
+            const errPayload = await response.json().catch(() => ({}));
+            throw new Error(errPayload.error || `Request failed (HTTP ${response.status})`);
+        }
 
         await consumeStream(response);
     } catch (err) {
@@ -715,22 +719,18 @@ async function consumeStream(response) {
             }
 
             if (event.node === "hitl_pause") {
-                if (event.data?.stage === 'planner') {
-                    renderHitlPane(event.data);
-                } else {
-                    resumePipeline(event.data?.fullState, event.data?.nextNode);
-                }
-                return; // stream ends here
+                renderHitlPane(event.data);
+                return; // stream ends here until user approves
             }
 
             if (event.node === "complete") {
                 if (event.data?.article) finalArticle = event.data.article;
                 if (event.data?.researchSummary) {
-                    researchPane.innerHTML = marked.parse(event.data.researchSummary);
+                    researchPane.innerHTML = DOMPurify.sanitize(marked.parse(event.data.researchSummary));
                 }
                 PIPELINE_STEPS.forEach(step => updateStepState(step.key, 'done'));
                 if (finalArticle) {
-                    finalPane.innerHTML = renderCopyArticleButton() + marked.parse(finalArticle);
+                    finalPane.innerHTML = renderCopyArticleButton() + DOMPurify.sanitize(marked.parse(finalArticle));
                 }
                 activateFinalTab();
                 return;
@@ -763,14 +763,14 @@ function applyNodeOutput(nodeName, data) {
     if (!data) return;
 
     if (nodeName === "researcher" && data.researchSummary) {
-        researchPane.innerHTML = marked.parse(data.researchSummary);
+        researchPane.innerHTML = DOMPurify.sanitize(marked.parse(data.researchSummary));
     }
     if (nodeName === "planner" && data.outline) {
         renderOutlineInPane(outlinePane, data.outline);
-        draftPane.innerHTML = `<h1>${data.outline.seoTitle}</h1><p style="color:var(--text-muted);font-style:italic;margin-bottom:1.5rem;">${data.outline.metaDescription}</p><div class="spinner"></div>`;
+        draftPane.innerHTML = `<h1>${escapeHtml(data.outline.seoTitle)}</h1><p style="color:var(--text-muted);font-style:italic;margin-bottom:1.5rem;">${escapeHtml(data.outline.metaDescription)}</p><div class="spinner"></div>`;
     }
     if (nodeName === "writer" && data.article) {
-        draftPane.innerHTML = marked.parse(data.article);
+        draftPane.innerHTML = DOMPurify.sanitize(marked.parse(data.article));
     }
     if (nodeName === "reviewer" && data.review) {
         finalArticle = data.article || finalArticle;
@@ -804,7 +804,7 @@ function renderHitlMarkdownEditor(value, rows = 18) {
                 <button type="button" class="active" data-hitl-mode="preview" aria-pressed="true">Preview</button>
                 <button type="button" data-hitl-mode="edit" aria-pressed="false">Edit Markdown</button>
             </div>
-            <div id="hitl-markdown-preview" class="prose hitl-markdown-preview">${marked.parse(value || '')}</div>
+            <div id="hitl-markdown-preview" class="prose hitl-markdown-preview">${DOMPurify.sanitize(marked.parse(value || ''))}</div>
             <textarea id="hitl-edit-area" class="hitl-textarea hidden" rows="${rows}">${escapeHtml(value || '')}</textarea>
         </div>
     `;
@@ -816,7 +816,7 @@ function setupHitlMarkdownEditor(pane) {
     if (!textarea || !preview) return;
 
     textarea.addEventListener('input', () => {
-        preview.innerHTML = marked.parse(textarea.value);
+        preview.innerHTML = DOMPurify.sanitize(marked.parse(textarea.value));
     });
 
     pane.querySelectorAll('[data-hitl-mode]').forEach(button => {
@@ -829,45 +829,31 @@ function setupHitlMarkdownEditor(pane) {
                 modeButton.classList.toggle('active', active);
                 modeButton.setAttribute('aria-pressed', String(active));
             });
-            if (previewMode) preview.innerHTML = marked.parse(textarea.value);
+            if (previewMode) preview.innerHTML = DOMPurify.sanitize(marked.parse(textarea.value));
         });
     });
 }
 
 function renderHitlPane(hitlData) {
-    const stage = hitlData.stage;
-    const fullState = hitlData.fullState;
+    const stage = hitlData.stage || 'planner';
+    const threadId = hitlData.threadId;
+    const outline = hitlData.outline || hitlData.fullState?.outline;
     const stageDef = PIPELINE_STEPS.find(s => s.key === stage);
     const stageLabel = stageDef ? stageDef.label : stage;
     const pane = getHitlPaneForStage(stage);
 
     activateTabForStep(stage);
 
-    // Build the editable field based on stage
-    let editorHtml = '';
-    if (stage === 'researcher') {
-        editorHtml = renderHitlMarkdownEditor(fullState.researchSummary || '', 14);
-    } else if (stage === 'planner') {
-        editorHtml = `
-            <textarea id="hitl-edit-area" class="hitl-textarea" rows="18">${escapeHtml(JSON.stringify(fullState.outline, null, 2))}</textarea>
-        `;
-    } else if (stage === 'writer') {
-        editorHtml = renderHitlMarkdownEditor(fullState.article || '');
-    } else if (stage === 'reviewer') {
-        const scoreBefore = fullState.review?.scoreBefore ?? fullState.review?.score;
-        const scoreAfter = fullState.review?.scoreAfter;
-        editorHtml = `
-            <div class="hitl-review-score">Quality before/after: <strong>${Number.isFinite(scoreBefore) ? scoreBefore : '—'} → ${Number.isFinite(scoreAfter) ? scoreAfter : '—'}/100</strong></div>
-            ${renderHitlMarkdownEditor(fullState.article || '')}
-        `;
-    }
+    const editorHtml = `
+        <textarea id="hitl-edit-area" class="hitl-textarea" rows="18">${escapeHtml(JSON.stringify(outline, null, 2))}</textarea>
+    `;
 
     pane.innerHTML = `
         <div class="hitl-container">
             <div class="hitl-header">
                 <div>
-                    <div class="hitl-title">👤 Human in the Loop: ${stageLabel}</div>
-                    <div class="hitl-subtitle">Review the formatted output, switch to Edit Markdown to make changes, then approve to continue.</div>
+                    <div class="hitl-title">👤 Human in the Loop: ${escapeHtml(stageLabel)}</div>
+                    <div class="hitl-subtitle">Review the outline JSON, make any edits, then approve to continue.</div>
                 </div>
             </div>
             ${editorHtml}
@@ -879,15 +865,14 @@ function renderHitlPane(hitlData) {
         </div>
     `;
 
-    setupHitlMarkdownEditor(pane);
-
     const approveBtn = document.getElementById('hitl-approve');
     const stopBtn = document.getElementById('hitl-stop');
 
     approveBtn.addEventListener('click', () => {
-        let edited;
+        let editedOutline;
         try {
-            edited = collectEditedState(stage, fullState);
+            const textarea = document.getElementById('hitl-edit-area');
+            editedOutline = parseEditedOutline(textarea ? textarea.value : '');
         } catch (error) {
             const validationError = document.getElementById('hitl-validation-error');
             validationError.textContent = error.message;
@@ -895,35 +880,14 @@ function renderHitlPane(hitlData) {
             return;
         }
 
-        // Replace the HITL editor with the (edited) stage output right away
-        renderStageOutputOnly(stage, edited);
-        resumePipeline(edited, hitlData.nextNode);
+        // Replace the HITL editor with the (edited) outline output right away
+        renderOutlineInPane(outlinePane, editedOutline);
+        resumePipeline(threadId, editedOutline);
     });
 
     stopBtn.addEventListener('click', () => {
         stopPipeline();
     });
-}
-
-// Merge user edits back into the full state
-function collectEditedState(stage, fullState) {
-    const textarea = document.getElementById('hitl-edit-area');
-    if (!textarea) return fullState;
-
-    const newState = { ...fullState };
-
-    if (stage === 'researcher') {
-        newState.researchSummary = textarea.value;
-    } else if (stage === 'planner') {
-        newState.outline = parseEditedOutline(textarea.value);
-    } else if (stage === 'writer' || stage === 'reviewer') {
-        newState.article = textarea.value;
-        if (stage === 'reviewer' && newState.review) {
-            newState.review = { ...newState.review, improvedArticle: textarea.value };
-        }
-    }
-
-    return newState;
 }
 
 function parseEditedOutline(value) {
@@ -966,38 +930,9 @@ function parseEditedOutline(value) {
     return outline;
 }
 
-async function resumePipeline(fullState, nextNode) {
-    if (!nextNode) {
-        // Pipeline finished (e.g. reviewer approved with good score)
-        if (fullState.article) {
-            finalArticle = fullState.article;
-            finalPane.innerHTML = renderCopyArticleButton() + marked.parse(finalArticle);
-        }
-        // Render the reviewer's Review tab content too
-        if (fullState.review) {
-            draftPane.innerHTML = renderArticleComparison(
-                fullState.originalArticle,
-                fullState.article,
-                'Draft comparison',
-                'First draft',
-                'After review'
-            );
-            renderReview(fullState.review, fullState.retryCount, fullState.originalArticle, fullState.reviewScores);
-        }
-        // Show the final article
-        activateFinalTab();
-        // When reviewer is NOT selected for HITL, move review tab to final
-        generateBtn.disabled = false;
-        generateBtnText.textContent = 'Generate';
-        return;
-    }
-
-    // Move UI forward
-    const stepIdx = hitlActiveSteps.findIndex(s => s.key === nextNode);
-    if (stepIdx > -1) {
-        updateStepState(nextNode, 'running');
-        activateTabForStep(nextNode);
-    }
+async function resumePipeline(threadId, outline) {
+    updateStepState('writer', 'running');
+    activateTabForStep('writer');
 
     const controller = beginGenerationRequest();
     try {
@@ -1005,13 +940,16 @@ async function resumePipeline(fullState, nextNode) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                fullState,
-                nextNode,
-                hitlEnabled: false,
-                hitlStages: []
+                threadId,
+                outline
             }),
             signal: controller.signal
         });
+
+        if (!response.ok) {
+            const errPayload = await response.json().catch(() => ({}));
+            throw new Error(errPayload.error || `Resume failed (HTTP ${response.status})`);
+        }
 
         await consumeStream(response);
     } catch (err) {
@@ -1097,11 +1035,11 @@ function renderStageOutputOnly(stage, fullState) {
     const pane = getHitlPaneForStage(stage);
 
     if (stage === 'researcher') {
-        pane.innerHTML = marked.parse(fullState.researchSummary || '');
+        pane.innerHTML = DOMPurify.sanitize(marked.parse(fullState.researchSummary || ''));
     } else if (stage === 'planner') {
         renderOutlineInPane(pane, fullState.outline);
     } else if (stage === 'writer') {
-        pane.innerHTML = marked.parse(fullState.article || '');
+        pane.innerHTML = DOMPurify.sanitize(marked.parse(fullState.article || ''));
     } else if (stage === 'reviewer') {
         renderStageOutputOnly('writer', fullState); // reviewer output lives in draft
         if (fullState.review) {
@@ -1117,16 +1055,16 @@ function renderOutlineInPane(pane, outline) {
     if (!outline) return;
     let html = `
         <div class="flex items-center gap-4 text-sm" style="color: var(--text-muted); margin-bottom: 1.5rem;">
-            <span>📖 ${outline.estimatedReadingTime} min read</span>
-            <span>📑 ${outline.sections.length} sections</span>
+            <span>📖 ${escapeHtml(outline.estimatedReadingTime)} min read</span>
+            <span>📑 ${escapeHtml(outline.sections.length)} sections</span>
         </div>
     `;
     outline.sections.forEach(sec => {
         html += `
         <div style="background: var(--bg-page); border: 1px solid var(--border-color); border-radius: 0.75rem; padding: 1rem; margin-bottom: 1rem;">
-            <h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem;">${sec.heading}</h3>
+            <h3 style="font-size: 1.125rem; font-weight: 600; margin-bottom: 0.5rem;">${escapeHtml(sec.heading)}</h3>
             <ul style="list-style: none;">
-                ${sec.keyPoints.map(pt => `<li class="flex items-center gap-2" style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 0.25rem;"><span style="color: var(--primary);">•</span> ${pt}</li>`).join('')}
+                ${sec.keyPoints.map(pt => `<li class="flex items-center gap-2" style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 0.25rem;"><span style="color: var(--primary);">•</span> ${escapeHtml(pt)}</li>`).join('')}
             </ul>
         </div>`;
     });
@@ -1147,7 +1085,9 @@ function escapeHtml(str) {
     return String(str)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 function copyArticle() {

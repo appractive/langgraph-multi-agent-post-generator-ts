@@ -1,9 +1,30 @@
-import express from 'express';
+import express, { type Request, type Response, type NextFunction } from 'express';
+import rateLimit from 'express-rate-limit';
+import crypto from 'crypto';
 import path from 'path';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
-import { buildEditorialGraph, type EditorialStage, type EditorialState } from './graph';
-import { DEFAULT_MODEL_CONFIG } from './types';
+import { z } from 'zod';
+import { Command, isInterrupted } from '@langchain/langgraph';
+import {
+  buildEditorialGraph,
+  OutlineSchema,
+  sharedCheckpointer,
+  type EditorialStage,
+  type EditorialState,
+  type HitlInterruptPayload,
+} from './graph';
+import { DEFAULT_MODEL_CONFIG, type ModelConfig } from './types';
+import { INPUT_LIMITS } from './prompt-safety';
+import { ModelRegistry, parseAllowlist } from './models';
+import {
+  log,
+  parsePricing,
+  RunBudget,
+  UsageCallbackHandler,
+  type BudgetLimits,
+} from './observability';
+import { runRegistry, type RunContext } from './llm';
 
 dotenv.config();
 
@@ -11,210 +32,259 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const openai = new OpenAI();
 
-app.use(express.json());
+app.use(express.json({ limit: '64kb' }));
 app.use(express.static(path.join(__dirname, '../public')));
 
-// ─── Model Strength Classification ─────────────────────────────────────────
-// Maps model ID patterns to a strength tier + friendly label.
+// ─── Health Check ───────────────────────────────────────────────────────────
 
-interface ModelInfo {
-  id: string;
-  name: string;
-  strength: 'flagship' | 'standard' | 'fast';
-  strengthLabel: string;
-}
+app.get('/healthz', (_req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
 
-const STRENGTH_RULES: { pattern: RegExp; strength: ModelInfo['strength']; label: string }[] = [
-  // Mini / nano / cheap models
-  { pattern: /mini|nano|3\.5/i,             strength: 'fast',      label: 'Fast & Cheap' },
-  // Flagship / premier models
-  { pattern: /^gpt-4o|^gpt-4\.1$|^gpt-4-turbo|^gpt-5/i, strength: 'flagship',  label: 'Flagship' },
-  // Standard models
-  { pattern: /^gpt-4/i,                    strength: 'standard',  label: 'Standard' },
-];
+// ─── Guardrails: Authentication, Rate Limiting & Budgets ────────────────────
 
-function classifyModel(id: string): Pick<ModelInfo, 'strength' | 'strengthLabel'> {
-  for (const rule of STRENGTH_RULES) {
-    if (rule.pattern.test(id)) {
-      return { strength: rule.strength, strengthLabel: rule.label };
-    }
+function requireApiKey(req: Request, res: Response, next: NextFunction): void {
+  const configuredKey = process.env.APP_API_KEY?.trim();
+  if (!configuredKey) {
+    next();
+    return;
   }
-  return { strength: 'standard', strengthLabel: 'Standard' };
+
+  const bearer = req.headers.authorization?.startsWith('Bearer ')
+    ? req.headers.authorization.slice(7).trim()
+    : undefined;
+  const headerKey = typeof req.headers['x-api-key'] === 'string'
+    ? req.headers['x-api-key'].trim()
+    : undefined;
+  const candidate = bearer || headerKey || '';
+
+  const expectedBuf = Buffer.from(configuredKey, 'utf8');
+  const candidateBuf = Buffer.from(candidate, 'utf8');
+  if (
+    expectedBuf.length !== candidateBuf.length ||
+    !crypto.timingSafeEqual(expectedBuf, candidateBuf)
+  ) {
+    res.status(401).json({ error: 'Unauthorized: valid API key required.' });
+    return;
+  }
+  next();
 }
 
-// Patterns of models that are NOT standard chat completions models or are unsupported in /v1/chat/completions
-const NON_CHAT_PATTERNS = [
-  /instruct/i,        // e.g. gpt-3.5-turbo-instruct (only supported in v1/completions)
-  /transcribe/i,      // e.g. gpt-4o-transcribe, gpt-4o-transcribe-diarize
-  /diarize/i,
-  /tts/i,             // e.g. gpt-4o-mini-tts
-  /audio/i,           // audio models
-  /realtime/i,        // realtime WebSockets/WebRTC models
-  /image/i,           // image models
-  /search/i,          // e.g. gpt-4o-search-preview, gpt-5-search-api
-  /codex/i,
-  /whisper/i,
-  /embedding/i,
-  /moderation/i,
-  /dall-e/i,
-  /davinci/i,
-  /babbage/i,
-  /curie/i,
-  /ada/i,
-  /canary/i,
-  /internal/i,
-  /live/i,
-  /sora/i,
-  /computer-use/i,
-  /-pro$/i,           // e.g. gpt-5.4-pro, gpt-5.5-pro, o1-pro (only supported in v1/responses or not chat models)
-  /chat-latest$/i,    // deprecated models like gpt-5.3-chat-latest
-  /\d{4}-\d{2}-\d{2}/, // dated snapshots e.g. 2024-08-06
-  /-\d{4}$/,          // dated snapshots e.g. -0613, -1106
-  /-\d{6}$/,
-  /-16k$/
-];
+const generateLimiter = rateLimit({
+  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_MAX) || 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many generation requests, please try again later.' },
+});
 
-// Explicit set of models that do not work with standard /v1/chat/completions + structured output
-const DISALLOWED_CHAT_MODELS = new Set([
-  'o1', 'o1-pro', 'o3', 'o3-mini', 'o4-mini',
-  'gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-5.5',
-  'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra',
-  'gpt-6-astra', 'gpt-6-luna', 'gpt-6-sol',
-  'chat-latest'
-]);
+const modelsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
-function isSupportedChatModel(id: string): boolean {
-  if (!id.startsWith('gpt-')) return false;
-  if (DISALLOWED_CHAT_MODELS.has(id)) return false;
-  return !NON_CHAT_PATTERNS.some(pattern => pattern.test(id));
+function getBudgetLimits(): BudgetLimits {
+  const maxTotalTokens = Number(process.env.MAX_REQUEST_TOKENS) || 120_000;
+  const maxLlmCalls = Number(process.env.MAX_LLM_CALLS) || 15;
+  const maxUsdRaw = process.env.MAX_REQUEST_USD ? Number(process.env.MAX_REQUEST_USD) : undefined;
+  return {
+    maxTotalTokens,
+    maxLlmCalls,
+    ...(maxUsdRaw && Number.isFinite(maxUsdRaw) && maxUsdRaw > 0 ? { maxUsd: maxUsdRaw } : {}),
+  };
 }
 
-// In-memory cache (refreshed at most every 5 minutes)
-let cachedModels: ModelInfo[] | null = null;
-let cacheTimestamp = 0;
-const CACHE_TTL_MS = 5 * 60 * 1000;
+// ─── Model Registry ─────────────────────────────────────────────────────────
 
-const FALLBACK_MODELS: ModelInfo[] = [
-  { id: 'gpt-4o', name: 'gpt-4o', strength: 'flagship', strengthLabel: 'Flagship' },
-  { id: 'gpt-4o-mini', name: 'gpt-4o-mini', strength: 'fast', strengthLabel: 'Fast & Cheap' },
-  { id: 'gpt-4.1', name: 'gpt-4.1', strength: 'flagship', strengthLabel: 'Flagship' },
-  { id: 'gpt-4.1-mini', name: 'gpt-4.1-mini', strength: 'fast', strengthLabel: 'Fast & Cheap' },
-  { id: 'gpt-4-turbo', name: 'gpt-4-turbo', strength: 'flagship', strengthLabel: 'Flagship' },
-  { id: 'gpt-4', name: 'gpt-4', strength: 'standard', strengthLabel: 'Standard' },
-  { id: 'gpt-3.5-turbo', name: 'gpt-3.5-turbo', strength: 'fast', strengthLabel: 'Fast & Cheap' },
-];
-
-const PRIORITY_ORDER: Record<string, number> = {
-  'gpt-4o': 1,
-  'gpt-4.1': 2,
-  'gpt-4-turbo': 3,
-  'gpt-5.4': 4,
-  'gpt-5.2': 5,
-  'gpt-5.1': 6,
-  'gpt-4': 10,
-  'gpt-4o-mini': 20,
-  'gpt-4.1-mini': 21,
-  'gpt-4.1-nano': 22,
-  'gpt-5.4-mini': 23,
-  'gpt-5.4-nano': 24,
-  'gpt-3.5-turbo': 30,
-};
-
-app.get('/api/models', async (_req, res) => {
-  try {
-    const now = Date.now();
-    if (cachedModels && now - cacheTimestamp < CACHE_TTL_MS) {
-      return res.json(cachedModels);
-    }
-
+export const modelRegistry = new ModelRegistry(
+  async () => {
     const list = await openai.models.list();
-    const models: ModelInfo[] = [];
-
+    const ids: string[] = [];
     for await (const m of list) {
-      if (!isSupportedChatModel(m.id)) continue;
-
-      const { strength, strengthLabel } = classifyModel(m.id);
-      models.push({ id: m.id, name: m.id, strength, strengthLabel });
+      ids.push(m.id);
     }
+    return ids;
+  },
+  parseAllowlist(process.env.MODEL_ALLOWLIST)
+);
 
-    // Sort: flagship first, then standard, then fast, ordered by priority
-    const ORDER: Record<string, number> = { flagship: 0, standard: 1, fast: 2 };
-    models.sort((a, b) => {
-      const tierDiff = (ORDER[a.strength] ?? 1) - (ORDER[b.strength] ?? 1);
-      if (tierDiff !== 0) return tierDiff;
-      const pA = PRIORITY_ORDER[a.id] ?? 50;
-      const pB = PRIORITY_ORDER[b.id] ?? 50;
-      if (pA !== pB) return pA - pB;
-      return a.id.localeCompare(b.id);
+app.get('/api/models', modelsLimiter, requireApiKey, async (req, res) => {
+  try {
+    const force = Boolean(req.query.t);
+    const models = await modelRegistry.list(force);
+    res.json(models);
+  } catch (err: unknown) {
+    log('error', 'models_fetch_failed', {
+      error: err instanceof Error ? err.message : String(err),
     });
-
-    cachedModels = models.length > 0 ? models : FALLBACK_MODELS;
-    cacheTimestamp = now;
-    res.json(cachedModels);
-  } catch (err: any) {
-    console.error('Failed to fetch models:', err.message);
-    res.json(FALLBACK_MODELS);
+    const fallback = await modelRegistry.list(false);
+    res.json(fallback);
   }
 });
 
-const EDITORIAL_STAGES = new Set<EditorialStage>(["researcher", "planner", "writer", "reviewer"]);
+// ─── Request Validation Schemas ─────────────────────────────────────────────
 
-function sendSse(res: any, event: unknown) {
+const ModelConfigSchema = z.object({
+  researcher: z.string().min(1).max(80).optional(),
+  planner: z.string().min(1).max(80).optional(),
+  writer: z.string().min(1).max(80).optional(),
+  reviewer: z.string().min(1).max(80).optional(),
+  judge: z.string().min(1).max(80).optional(),
+}).strict();
+
+export const GenerateRequestSchema = z.object({
+  topic: z.string().trim().min(1, 'Topic is required').max(INPUT_LIMITS.topicChars),
+  sources: z.array(z.string().trim().max(INPUT_LIMITS.sourceEntryChars)).max(INPUT_LIMITS.sourceEntries).optional().default([]),
+  enableWebSearch: z.boolean().optional().default(true),
+  hitlEnabled: z.boolean().optional().default(false),
+  modelConfig: ModelConfigSchema.optional(),
+});
+
+export const ContinueRequestSchema = z.object({
+  threadId: z.string().uuid('Valid threadId is required'),
+  outline: OutlineSchema,
+});
+
+// ─── Thread Lifecycle & Expiry ──────────────────────────────────────────────
+
+const THREAD_TTL_MS = 30 * 60 * 1000;
+
+async function cleanupExpiredThreads(): Promise<void> {
+  const now = Date.now();
+  for (const ctx of runRegistry.values()) {
+    if (now - ctx.lastActiveAt > THREAD_TTL_MS) {
+      runRegistry.delete(ctx.threadId);
+      await sharedCheckpointer.deleteThread(ctx.threadId).catch(() => undefined);
+    }
+  }
+}
+
+setInterval(() => {
+  void cleanupExpiredThreads();
+}, 5 * 60 * 1000).unref();
+
+// ─── Graph Stream Runner ────────────────────────────────────────────────────
+
+const EDITORIAL_STAGES = new Set<EditorialStage>(['researcher', 'planner', 'writer', 'reviewer']);
+
+function sendSse(res: Response, event: unknown): void {
   if (!res.destroyed && !res.writableEnded) {
     res.write(`data: ${JSON.stringify(event)}\n\n`);
   }
 }
 
-async function runGraph(res: any, state: EditorialState, signal: AbortSignal) {
-  let currentState = state;
+type GraphStreamInput = Parameters<ReturnType<typeof buildEditorialGraph>['stream']>[0];
+
+async function streamEditorialRun(
+  res: Response,
+  ctx: RunContext,
+  input: GraphStreamInput,
+  signal: AbortSignal
+): Promise<void> {
   let activeStage: EditorialStage | null = null;
-  let paused = false;
+  let interruptedPayload: HitlInterruptPayload | null = null;
+  const runStart = Date.now();
 
   try {
-    const graph = buildEditorialGraph(stage => {
-      activeStage = stage;
-      sendSse(res, { node: stage, status: "running" });
-    }, (stage, update) => {
-      sendSse(res, { node: stage, status: "done", data: update });
+    const graph = buildEditorialGraph(
+      stage => {
+        activeStage = stage;
+        sendSse(res, { node: stage, status: 'running' });
+      },
+      (stage, update) => {
+        sendSse(res, { node: stage, status: 'done', data: update });
+      }
+    );
+
+    const callbackHandler = new UsageCallbackHandler(ctx.budget, ctx.threadId);
+    const stream = await graph.stream(input, {
+      streamMode: 'updates',
+      signal,
+      configurable: { thread_id: ctx.threadId },
+      callbacks: [callbackHandler],
     });
-    const updates = await graph.stream(state, { streamMode: "updates", signal });
 
-    for await (const chunk of updates) {
+    for await (const chunk of stream) {
       if (signal.aborted || res.destroyed || res.writableEnded) return;
+      ctx.lastActiveAt = Date.now();
 
-      for (const [nodeName, update] of Object.entries(chunk)) {
-        const nodeUpdate = update as Partial<EditorialState>;
-        currentState = { ...currentState, ...nodeUpdate };
+      if (isInterrupted(chunk)) {
+        const interruptEntry = chunk.__interrupt__?.[0];
+        if (interruptEntry?.value) {
+          interruptedPayload = interruptEntry.value as HitlInterruptPayload;
+        }
+        continue;
+      }
 
-        if (nodeName === "pause") {
-          paused = true;
-          sendSse(res, {
-            node: "hitl_pause",
-            data: {
-              stage: nodeUpdate.pausedStage,
-              nextNode: nodeUpdate.nextNode,
-              fullState: currentState,
-            },
-          });
-        } else if (EDITORIAL_STAGES.has(nodeName as EditorialStage)) {
+      for (const nodeName of Object.keys(chunk)) {
+        if (EDITORIAL_STAGES.has(nodeName as EditorialStage)) {
           activeStage = nodeName as EditorialStage;
         }
       }
     }
 
-    if (!paused && !signal.aborted && !res.destroyed && !res.writableEnded) {
-      sendSse(res, {
-        node: "complete",
-        data: { article: currentState.article, researchSummary: currentState.researchSummary },
+    if (signal.aborted || res.destroyed || res.writableEnded) return;
+
+    const snapshot = await graph.getState({ configurable: { thread_id: ctx.threadId } });
+    const finalValues = snapshot.values as EditorialState;
+
+    if (interruptedPayload) {
+      ctx.status = 'paused';
+      ctx.lastActiveAt = Date.now();
+      log('info', 'run_paused', {
+        thread_id: ctx.threadId,
+        stage: interruptedPayload.stage,
+        usage: ctx.budget.summary(),
       });
+      sendSse(res, {
+        node: 'hitl_pause',
+        data: {
+          threadId: ctx.threadId,
+          stage: interruptedPayload.stage,
+          outline: interruptedPayload.outline ?? finalValues.outline,
+        },
+      });
+      return;
     }
-  } catch (error: any) {
+
+    ctx.status = 'done';
+    const usage = ctx.budget.summary();
+    log('info', 'run_complete', {
+      thread_id: ctx.threadId,
+      latency_ms: Date.now() - runStart,
+      usage,
+    });
+    sendSse(res, {
+      node: 'complete',
+      data: {
+        threadId: ctx.threadId,
+        article: finalValues.article,
+        researchSummary: finalValues.researchSummary,
+        usage,
+      },
+    });
+    runRegistry.delete(ctx.threadId);
+    await sharedCheckpointer.deleteThread(ctx.threadId).catch(() => undefined);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    log('error', 'run_failed', {
+      thread_id: ctx.threadId,
+      stage: activeStage ?? 'workflow',
+      error: message,
+      usage: ctx.budget.summary(),
+    });
     if (!signal.aborted && !res.destroyed && !res.writableEnded) {
       sendSse(res, {
-        node: activeStage ?? "workflow",
-        status: "error",
-        error: error.message,
+        node: activeStage ?? 'workflow',
+        status: 'error',
+        error: message,
       });
+    }
+    if (ctx.status !== 'paused') {
+      runRegistry.delete(ctx.threadId);
+      await sharedCheckpointer.deleteThread(ctx.threadId).catch(() => undefined);
     }
   } finally {
     if (!res.writableEnded) res.end();
@@ -223,7 +293,31 @@ async function runGraph(res: any, state: EditorialState, signal: AbortSignal) {
 
 // ─── Endpoints ──────────────────────────────────────────────────────────────
 
-app.post('/api/generate', async (req, res) => {
+app.post('/api/generate', generateLimiter, requireApiKey, async (req, res) => {
+  const parsed = GenerateRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error: parsed.error.issues.map(i => `${i.path.join('.') || 'body'}: ${i.message}`).join('; '),
+    });
+    return;
+  }
+
+  const { topic, sources, enableWebSearch, hitlEnabled, modelConfig: rawModels } = parsed.data;
+  const resolvedModels: ModelConfig = {
+    researcher: rawModels?.researcher || DEFAULT_MODEL_CONFIG.researcher,
+    planner: rawModels?.planner || DEFAULT_MODEL_CONFIG.planner,
+    writer: rawModels?.writer || DEFAULT_MODEL_CONFIG.writer,
+    reviewer: rawModels?.reviewer || DEFAULT_MODEL_CONFIG.reviewer,
+    judge: rawModels?.judge || DEFAULT_MODEL_CONFIG.judge,
+  };
+
+  for (const [role, modelId] of Object.entries(resolvedModels)) {
+    if (!(await modelRegistry.isAllowed(modelId))) {
+      res.status(400).json({ error: `Disallowed or unsupported model for ${role}: ${modelId}` });
+      return;
+    }
+  }
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -233,31 +327,53 @@ app.post('/api/generate', async (req, res) => {
     if (!res.writableEnded) controller.abort();
   });
 
-  const { hitlEnabled, hitlStages: _hitlStages, ...rawState } = req.body;
+  const threadId = crypto.randomUUID();
+  const budget = new RunBudget(getBudgetLimits(), parsePricing(process.env.MODEL_PRICING_JSON));
+  const ctx: RunContext = {
+    threadId,
+    budget,
+    createdAt: Date.now(),
+    lastActiveAt: Date.now(),
+    status: 'running',
+  };
+  runRegistry.set(ctx);
 
-  const state: EditorialState = {
-    ...rawState,
-    modelConfig: { ...DEFAULT_MODEL_CONFIG, ...(rawState.modelConfig || {}) },
-    sources: rawState.sources || [],
-    enableWebSearch: rawState.enableWebSearch !== false,
-    researchSummary: "",
+  const initialState: EditorialState = {
+    topic,
+    sources: sources.filter(Boolean),
+    enableWebSearch,
+    research: null,
+    researchSummary: '',
     outline: null,
-    article: "",
-    originalArticle: "",
+    article: '',
+    originalArticle: '',
     review: null,
     retryCount: 0,
     reviewScores: [],
-    hitlStages: hitlEnabled ? ["planner"] : [],
-    startNode: null,
+    modelConfig: resolvedModels,
+    hitlStages: hitlEnabled ? ['planner'] : [],
     currentStage: null,
-    pausedStage: null,
-    nextNode: null,
   };
 
-  await runGraph(res, state, controller.signal);
+  await streamEditorialRun(res, ctx, initialState, controller.signal);
 });
 
-app.post('/api/generate/continue', async (req, res) => {
+app.post('/api/generate/continue', generateLimiter, requireApiKey, async (req, res) => {
+  const parsed = ContinueRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error: parsed.error.issues.map(i => `${i.path.join('.') || 'body'}: ${i.message}`).join('; '),
+    });
+    return;
+  }
+
+  const { threadId, outline } = parsed.data;
+  const ctx = runRegistry.get(threadId);
+  if (!ctx || ctx.status !== 'paused') {
+    res.status(404).json({ error: 'Paused workflow thread not found or already completed.' });
+    return;
+  }
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -267,30 +383,19 @@ app.post('/api/generate/continue', async (req, res) => {
     if (!res.writableEnded) controller.abort();
   });
 
-  const { fullState, nextNode, hitlEnabled, hitlStages: _hitlStages } = req.body;
+  ctx.status = 'running';
+  ctx.lastActiveAt = Date.now();
 
-  if (!nextNode) {
-    // Nothing left to run
-    res.write(`data: ${JSON.stringify({ node: "complete", data: { article: fullState?.article } })}\n\n`);
-    res.end();
-    return;
-  }
-
-  if (!EDITORIAL_STAGES.has(nextNode as EditorialStage)) {
-    sendSse(res, { node: "workflow", status: "error", error: `Unknown node: ${nextNode}` });
-    res.end();
-    return;
-  }
-
-  const state: EditorialState = {
-    ...fullState,
-    hitlStages: hitlEnabled ? ["planner"] : [],
-    startNode: nextNode,
-  };
-
-  await runGraph(res, state, controller.signal);
+  const resumeCommand = new Command<unknown, Partial<EditorialState>, EditorialStage | 'hitl_review'>({
+    resume: outline,
+  });
+  await streamEditorialRun(res, ctx, resumeCommand, controller.signal);
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server running locally at http://localhost:${PORT}`);
-});
+export { app };
+
+if (require.main === module) {
+  app.listen(PORT, () => {
+    log('info', 'server_listening', { port: Number(PORT), url: `http://localhost:${PORT}` });
+  });
+}
