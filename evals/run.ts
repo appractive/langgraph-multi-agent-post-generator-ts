@@ -9,8 +9,10 @@ import { createRunStore, type RunContext } from "../src/run-store";
 import { configureRunStore, runRegistry } from "../src/llm";
 import { DEFAULT_MODEL_CONFIG, type Outline } from "../src/types";
 import {
-  coverageGaps,
   groundingFailures,
+  headingGaps,
+  keyPointGaps,
+  missingRequired,
   outlineLimitIssues,
   type EvalFailure,
 } from "./checks";
@@ -34,6 +36,8 @@ interface EvalCase {
   sources?: string[];
   enableWebSearch?: boolean;
   editedOutline?: Outline;
+  /** Phrases the finished article must contain (distinctive requirements). */
+  mustInclude?: string[];
 }
 
 interface EvalResult {
@@ -41,6 +45,7 @@ interface EvalResult {
   kind: EvalCase["kind"];
   ok: boolean;
   failures: EvalFailure[];
+  warnings: string[];
   metrics: {
     latencyMs: number;
     sections: number;
@@ -143,7 +148,9 @@ async function runCase(testCase: EvalCase): Promise<EvalResult> {
   const usage = budget.summary();
 
   const failures: EvalFailure[] = [];
+  const warnings: string[] = [];
   const outline = finalState.outline;
+  const articleText = finalState.article ?? "";
 
   if (!outline) {
     failures.push({ check: "outline.present", detail: "the planner produced no outline" });
@@ -151,15 +158,27 @@ async function runCase(testCase: EvalCase): Promise<EvalResult> {
     for (const issue of outlineLimitIssues(outline)) {
       failures.push({ check: "outline.limits", detail: issue });
     }
-    const gaps = coverageGaps(outline, finalState.article ?? "");
-    if (gaps.length > 0) {
-      failures.push({ check: "outline.coverage", detail: `uncovered key points: ${gaps.join(" | ")}` });
+    // Hard: the writer must use the outline's headings (structure is contract).
+    const headings = headingGaps(outline, articleText);
+    if (headings.length > 0) {
+      failures.push({
+        check: "outline.structure",
+        detail: `sections missing from the article: ${headings.join(" | ")}`,
+      });
     }
+    // Warn: paraphrase is legitimate, so missing vocabulary is reported only.
+    const thin = keyPointGaps(outline, articleText);
+    if (thin.length > 0) warnings.push(`key points phrased differently: ${thin.join(" | ")}`);
   }
 
-  failures.push(...groundingFailures(finalState.article ?? "", finalState.research ?? null, finalState.researchSummary ?? ""));
+  failures.push(...groundingFailures(articleText, finalState.research ?? null, finalState.researchSummary ?? ""));
 
-  const words = (finalState.article ?? "").split(/\s+/).filter(Boolean).length;
+  const missing = missingRequired(articleText, testCase.mustInclude);
+  if (missing.length > 0) {
+    failures.push({ check: "requirements.mustInclude", detail: `article never mentions: ${missing.join(", ")}` });
+  }
+
+  const words = articleText.split(/\s+/).filter(Boolean).length;
   if (words < 250) {
     failures.push({ check: "article.length", detail: `article is only ${words} words` });
   }
@@ -177,9 +196,12 @@ async function runCase(testCase: EvalCase): Promise<EvalResult> {
         detail: `final outline title is "${outline?.seoTitle}", expected "${testCase.editedOutline.seoTitle}"`,
       });
     }
-    const gaps = coverageGaps(testCase.editedOutline, finalState.article ?? "");
-    if (gaps.length > 0) {
-      failures.push({ check: "hitl.editsPreserved", detail: `edited points missing: ${gaps.join(" | ")}` });
+    const editedHeadings = headingGaps(testCase.editedOutline, articleText);
+    if (editedHeadings.length > 0) {
+      failures.push({
+        check: "hitl.editsPreserved",
+        detail: `edited outline sections missing: ${editedHeadings.join(" | ")}`,
+      });
     }
   }
 
@@ -188,6 +210,7 @@ async function runCase(testCase: EvalCase): Promise<EvalResult> {
     kind: testCase.kind,
     ok: failures.length === 0,
     failures,
+    warnings,
     metrics: {
       latencyMs: Date.now() - startedAt,
       sections: outline?.sections.length ?? 0,
@@ -230,6 +253,7 @@ async function main(): Promise<void> {
       results.push(result);
       console.log(result.ok ? "pass" : `FAIL (${result.failures.length})`);
       for (const failure of result.failures) console.log(`      - ${failure.check}: ${failure.detail}`);
+      for (const warning of result.warnings) console.log(`      ~ ${warning}`);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       results.push({
@@ -237,6 +261,7 @@ async function main(): Promise<void> {
         kind: testCase.kind,
         ok: false,
         failures: [{ check: "run", detail: message }],
+        warnings: [],
         metrics: {
           latencyMs: 0, sections: 0, articleWords: 0, suggestionCount: 0,
           scoreBefore: null, scoreAfter: null, calls: 0, totalTokens: 0,

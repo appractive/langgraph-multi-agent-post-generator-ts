@@ -57,6 +57,7 @@
         "Coordination cost grows faster than team size, which is why communication paths multiply quadratically."
       ],
       "enableWebSearch": false,
+      "mustInclude": ["cats"],
       "editedOutline": {
         "seoTitle": "Why small teams ship faster",
         "metaDescription": "Coordination cost, not headcount, decides how fast a team can ship software.",

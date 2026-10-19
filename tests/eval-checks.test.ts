@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   citedSourceIds,
-  coverageGaps,
   groundingFailures,
+  headingGaps,
   injectionLeaks,
+  isCheckable,
+  keyPointGaps,
+  missingRequired,
   outlineLimitIssues,
   unsupportedNumbers,
 } from "../evals/checks";
@@ -86,11 +89,41 @@ describe("outline checks", () => {
 
   it("finds key points the article does not discuss", () => {
     const article = "Coordination: handoffs cost more than work in most teams.";
-    expect(coverageGaps(outline, article)).toEqual(["Cats: The team has no room for cats"]);
+    expect(keyPointGaps(outline, article)).toEqual(["Cats: The team has no room for cats"]);
   });
 
   it("accepts an article that covers every point", () => {
     const article = "Handoffs cost more than work. The team has no room for cats at all.";
-    expect(coverageGaps(outline, article)).toEqual([]);
+    expect(keyPointGaps(outline, article)).toEqual([]);
+  });
+
+  // Regression: a live run failed on "Side-by-side comparison of Rust and Go
+  // based on various metrics", an outline point made only of meta vocabulary.
+  it("ignores outline points that describe structure instead of content", () => {
+    // Meta words are ignored, but "Rust" is real content, so it is checkable.
+    expect(isCheckable("Side-by-side comparison of Rust and Go based on various metrics.")).toBe(true);
+    expect(isCheckable("Summary of key points discussed.")).toBe(false);
+    expect(isCheckable("Summary of key points discussed.")).toBe(false);
+    expect(isCheckable("The team has no room for cats")).toBe(true);
+    // The live regression: a Rust/Go article that does discuss both.
+    expect(keyPointGaps({
+      ...outline,
+      sections: [{
+        heading: "Comparative Analysis",
+        keyPoints: ["Side-by-side comparison of Rust and Go based on various metrics."],
+      }],
+    }, "Rust compiles slowly; Go ships fast.")).toEqual([]);
+  });
+
+  it("requires the outline headings to appear in the article", () => {
+    const article = ["## Coordination", "Handoffs cost more.", "", "## Cats", "No room."].join("\n");
+    expect(headingGaps(outline, article)).toEqual([]);
+    expect(headingGaps(outline, "## Coordination only")).toEqual(["Cats"]);
+  });
+
+  it("checks required phrases explicitly", () => {
+    expect(missingRequired("The team has no room for cats.", ["cats"])).toEqual([]);
+    expect(missingRequired("No pets here.", ["cats"])).toEqual(["cats"]);
+    expect(missingRequired("anything", undefined)).toEqual([]);
   });
 });

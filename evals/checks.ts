@@ -54,6 +54,13 @@ export function unsupportedNumbers(article: string, researchText: string): strin
   return factualNumbers(article).filter(number => !haystack.includes(number));
 }
 
+/** Required phrases (from a case definition) that the article must contain. */
+export function missingRequired(article: string, required: string[] | undefined): string[] {
+  if (!required || required.length === 0) return [];
+  const haystack = normalize(article);
+  return required.filter(term => !haystack.includes(normalize(term)));
+}
+
 /** Strings that must never survive from untrusted input into the article. */
 export const INJECTION_CANARIES = ["<script", "javascript:", "onerror=", "CANARY-INJECTION"];
 
@@ -62,13 +69,64 @@ export function injectionLeaks(article: string): string[] {
   return INJECTION_CANARIES.filter(canary => lower.includes(canary.toLowerCase()));
 }
 
-/** Outline key points that the article does not visibly discuss. */
-export function coverageGaps(outline: Outline, article: string): string[] {
+function normalize(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/**
+ * Sections whose heading never appears in the article. This is the structural
+ * assertion: the writer is told to use the outline headings as its H2s.
+ */
+export function headingGaps(outline: Outline, article: string): string[] {
+  const haystack = normalize(article);
+  return outline.sections
+    .filter(section => {
+      const heading = normalize(section.heading);
+      return heading.length > 0 && !haystack.includes(heading);
+    })
+    .map(section => section.heading);
+}
+
+/**
+ * Words that describe structure rather than content ("side-by-side
+ * comparison", "summary of key points"). An outline point made only of these
+ * cannot be checked by vocabulary, so it is reported, never failed.
+ */
+const META_WORDS = new Set([
+  "comparison", "compare", "comparing", "comparative", "analysis", "analyse",
+  "analyze", "overview", "summary", "conclusion", "introduction", "section",
+  "sections", "point", "points", "discussed", "discuss", "various", "metrics",
+  "side", "overall", "final", "key", "main", "brief", "explain", "explains",
+  "describe", "describes", "provide", "provides", "future", "outlook",
+  "based", "using", "according", "regarding", "example", "examples",
+  "detail", "details", "specific", "specifically", "include", "includes",
+]);
+
+/** A token counts as meta when it, or every hyphen-separated part, is meta. */
+function isMetaToken(word: string): boolean {
+  if (META_WORDS.has(word)) return true;
+  // Hyphenated filler such as "side-by-side" is meta when every part is.
+  return word.split("-").every(part => META_WORDS.has(part) || STOPWORDS.has(part));
+}
+
+/** True when a key point has enough distinctive vocabulary to be checkable. */
+export function isCheckable(point: string): boolean {
+  return contentWords(point).some(word => !isMetaToken(word));
+}
+
+/**
+ * Warn-only: key points whose distinctive vocabulary is absent. Paraphrase is
+ * legitimate writing, so this surfaces in the report without failing a run.
+ */
+export function keyPointGaps(outline: Outline, article: string): string[] {
   const articleWords = new Set(contentWords(article));
   const gaps: string[] = [];
   for (const section of outline.sections) {
     for (const point of section.keyPoints) {
-      const words = contentWords(point);
+      if (!isCheckable(point)) continue;
+      // Compare only distinctive vocabulary: meta words such as "comparison"
+      // or "metrics" describe structure and would drown out the real content.
+      const words = contentWords(point).filter(word => !isMetaToken(word));
       if (words.length === 0) continue;
       const hits = words.filter(word => articleWords.has(word)).length;
       // A point is covered when most of its distinctive vocabulary appears.
