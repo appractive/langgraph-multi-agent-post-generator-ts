@@ -4,19 +4,15 @@ A browser app drives a LangGraph `StateGraph` in Node/Express. The graph runs fo
 
 ```mermaid
 flowchart LR
-    user[User] --> browser[Browser<br/>vanilla JS + marked + DOMPurify]
-
-    browser -->|GET /api/config<br/>does this server need a key?| server[Express server]
-    browser -->|GET /api/models<br/>POST /api/generate, /continue<br/>SSE progress| server
-
-    server -->|auth · rate limit · budget| graph[LangGraph StateGraph<br/>researcher → planner → hitl → writer → reviewer]
-
-    graph -->|Responses API + web_search| responses[OpenAI Responses API]
-    graph -->|Chat Completions| chat[OpenAI Chat Completions]
-    graph -->|checkpoint + run budget| sqlite[(SQLite<br/>checkpoints + runs)]
-
-    server -->|traceable nodes| traces[LangSmith traces]
-    sqlite -->|resume after restart| graph
+    user["User"] --> browser["Browser<br/>vanilla JS, marked, DOMPurify"]
+    browser -->|"GET /api/config"| server["Express server"]
+    browser -->|"GET /api/models and POST /api/generate"| server
+    server -->|"auth, rate limit, budget"| pipeline["LangGraph StateGraph<br/>researcher, planner, hitl, writer, reviewer"]
+    pipeline -->|"Responses API with web_search"| responses["OpenAI Responses API"]
+    pipeline -->|"Chat Completions"| chat["OpenAI Chat Completions"]
+    pipeline -->|"checkpoints and run budget"| sqlite[("SQLite<br/>checkpoints and runs")]
+    server -->|"traceable nodes"| traces["LangSmith traces"]
+    sqlite -->|"resume after restart"| pipeline
 ```
 
 ## Layers
