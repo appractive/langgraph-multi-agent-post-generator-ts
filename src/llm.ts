@@ -1,6 +1,6 @@
 import type { BaseLanguageModelInput } from "@langchain/core/language_models/base";
 import type { BaseMessageLike } from "@langchain/core/messages";
-import type { Runnable } from "@langchain/core/runnables";
+import type { Runnable, RunnableConfig } from "@langchain/core/runnables";
 import { ChatOpenAI } from "@langchain/openai";
 import { isReasoningModel } from "./models";
 import { RunBudget } from "./observability";
@@ -75,6 +75,18 @@ export interface InvokeOptions {
   ctx: RunContext;
   node: string;
   signal?: AbortSignal;
+  /**
+   * The LangGraph run config. Passing it is what propagates the run's
+   * callbacks (usage tracking, tracing) down to the model call — invoking with
+   * only `{ signal }` replaces that config and silently disables them.
+   */
+  config?: RunnableConfig;
+}
+
+/** Run config for a model call: inherits callbacks/tracing from the graph. */
+function runConfig(opts: InvokeOptions): RunnableConfig {
+  const signal = opts.signal ?? opts.config?.signal;
+  return { ...(opts.config ?? {}), ...(signal ? { signal } : {}) };
 }
 
 function errorMessage(err: unknown): string {
@@ -88,7 +100,7 @@ export async function invokeText(
   opts: InvokeOptions
 ): Promise<string> {
   opts.ctx.budget.assertCanSpend(opts.node);
-  const response = await llm.invoke(messages, { signal: opts.signal });
+  const response = await llm.invoke(messages, runConfig(opts));
   return response.text;
 }
 
@@ -105,7 +117,7 @@ export async function invokeStructuredWithRetry<T>(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     opts.ctx.budget.assertCanSpend(opts.node);
     try {
-      return await llm.invoke(currentMessages, { signal: opts.signal });
+      return await llm.invoke(currentMessages, runConfig(opts));
     } catch (err: unknown) {
       if (opts.signal?.aborted) throw err;
       if (attempt === maxAttempts) {

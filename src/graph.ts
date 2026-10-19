@@ -395,7 +395,7 @@ export async function plannerNode(
       content: `${UNTRUSTED_DATA_POLICY}\nCreate a detailed 4-6 section blog post outline grounded in the supplied research. Respond with strictly valid JSON only — no extra text, no trailing characters.`,
     },
     { role: "user", content: promptParts.join("\n\n") },
-  ], { ctx, node: "planner", repair: repairOutlineFromError, signal: config?.signal });
+  ], { ctx, node: "planner", repair: repairOutlineFromError, config });
 
   return { outline };
 }
@@ -460,7 +460,7 @@ export async function findMissingRequirements(
   requirements: string[],
   article: string,
   ctx: RunContext,
-  signal?: AbortSignal
+  config?: LangGraphRunnableConfig
 ): Promise<string[]> {
   if (requirements.length === 0) return [];
   const llm = createChatModel(model, { temperature: 0, maxTokens: 1024 }).withStructuredOutput(CoverageSchema);
@@ -474,7 +474,7 @@ export async function findMissingRequirements(
       role: "user",
       content: `${wrapUntrusted("requirements", reqText, INPUT_LIMITS.researchPromptChars)}\n\n${wrapUntrusted("article", article, INPUT_LIMITS.articlePromptChars)}`,
     },
-  ], { ctx, node: "writer", signal });
+  ], { ctx, node: "writer", config });
   return Array.from(new Set(result.missing))
     .filter(n => n >= 1 && n <= requirements.length)
     .map(n => requirements[n - 1]);
@@ -510,11 +510,11 @@ export async function writerNode(
   let article = await invokeText(llm, [
     { role: "system", content: WRITER_SYSTEM_PROMPT },
     { role: "user", content: `${outlineBlock}\n\n${researchBlock}${feedbackBlock}` },
-  ], { ctx, node: "writer", signal: config?.signal });
+  ], { ctx, node: "writer", config });
 
   // Verify the draft honors every outline point; revise once if any are missing.
   const requirements = outlineRequirements(outline);
-  const missing = await findMissingRequirements(state.modelConfig.reviewer, requirements, article, ctx, config?.signal);
+  const missing = await findMissingRequirements(state.modelConfig.reviewer, requirements, article, ctx, config);
   if (missing.length > 0) {
     const missingBlock = wrapUntrusted("missing", missing.map(m => `- ${m}`).join("\n"), INPUT_LIMITS.feedbackChars);
     const draftBlock = wrapUntrusted("draft", article, INPUT_LIMITS.articlePromptChars);
@@ -527,7 +527,7 @@ export async function writerNode(
         role: "user",
         content: `${outlineBlock}\n\n${researchBlock}\n\nYour draft omitted these required outline points. Cover each one explicitly in the matching section:\n${missingBlock}\n\n${draftBlock}`,
       },
-    ], { ctx, node: "writer", signal: config?.signal })).trim();
+    ], { ctx, node: "writer", config })).trim();
     if (revised) article = revised;
   }
 
@@ -545,7 +545,7 @@ async function evaluateWithJudge(
   outline: Outline | null,
   research: Research | null,
   ctx: RunContext,
-  signal?: AbortSignal
+  config?: LangGraphRunnableConfig
 ): Promise<{ score: number; criteria: RubricCriterionResult[]; feedback: string[] }> {
   const llm = createChatModel(judgeModel, { temperature: 0, maxTokens: 2048 })
     .withStructuredOutput(RubricJudgementSchema);
@@ -572,7 +572,7 @@ ${RUBRIC_ANCHORS}
 Return one entry for every criterion id with a concrete 1–2 sentence rationale and an integer score from 0 to 4. Be strict and objective.`,
     },
     { role: "user", content: userParts.join("\n\n") },
-  ], { ctx, node: "reviewer", signal });
+  ], { ctx, node: "reviewer", config });
 
   const { score, criteria } = scoreRubric(judgement);
   return { score, criteria, feedback: rubricFeedback(criteria) };
@@ -598,7 +598,7 @@ export async function reviewerNode(
     state.outline,
     state.research,
     ctx,
-    config?.signal
+    config
   );
 
   // 2. Editor model performs targeted edits (does NOT assign scores)
@@ -640,7 +640,7 @@ CRITICAL RULES:
   ], {
     ctx,
     node: "reviewer",
-    signal: config?.signal,
+    config,
     repair: (err: unknown): z.infer<typeof ReviewEditSchema> | null => {
       const text = err instanceof Error ? err.message : "";
       const match = text.match(/Text:\s*"?\s*(\{[\s\S]*?\})\s*"?\s*\.?\s*Error:/) || text.match(/(\{[\s\S]*\})/);
@@ -686,7 +686,7 @@ CRITICAL RULES:
         state.outline,
         state.research,
         ctx,
-        config?.signal
+        config
       );
 
   const changedArticle = finalizedArticle.trim() !== state.article.trim();
