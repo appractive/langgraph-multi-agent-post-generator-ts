@@ -4,7 +4,7 @@ import path from "path";
 import crypto from "crypto";
 import { Command, isInterrupted, MemorySaver } from "@langchain/langgraph";
 import { buildEditorialGraph, type EditorialStage, type EditorialState } from "../src/graph";
-import { RunBudget, resolvePricing } from "../src/observability";
+import { RunBudget, resolvePricing, UsageCallbackHandler } from "../src/observability";
 import { createRunStore, type RunContext } from "../src/run-store";
 import { configureRunStore, runRegistry } from "../src/llm";
 import { DEFAULT_MODEL_CONFIG, type Outline } from "../src/types";
@@ -108,7 +108,10 @@ async function runCase(testCase: EvalCase): Promise<EvalResult> {
 
   const checkpointer = new MemorySaver();
   const graph = buildEditorialGraph(undefined, undefined, checkpointer);
-  const config = { configurable: { thread_id: threadId } };
+  // Without this handler the budget only sees the researcher, which records
+  // its own usage from the Responses API — every other stage would report zero.
+  const usageHandler = new UsageCallbackHandler(budget, threadId);
+  const config = { configurable: { thread_id: threadId }, callbacks: [usageHandler] };
 
   const initialState = {
     topic: testCase.topic,

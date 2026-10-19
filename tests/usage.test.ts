@@ -60,3 +60,36 @@ describe("usage accounting plumbing", () => {
     expect(budget.calls).toBe(0);
   });
 });
+
+// The eval harness and the server both attach the usage handler to
+// graph.stream(); this pins that a graph-level callback actually reaches the
+// model call inside a node, which is what makes per-stage cost visible.
+describe("graph-level callback propagation", () => {
+  it("records usage reported from inside a node", async () => {
+    const { Annotation, StateGraph, START, END } = await import("@langchain/langgraph");
+    const budget = new RunBudget({ maxTotalTokens: 1000, maxLlmCalls: 5 }, resolvePricing(undefined));
+    const ctx: RunContext = { threadId: "g1", budget, createdAt: 0, lastActiveAt: 0, status: "running" };
+
+    const State = Annotation.Root({ out: Annotation<string>() });
+    const graph = new StateGraph(State)
+      .addNode("writer", async (_state, config: unknown) => ({
+        out: await invokeText(model(), [{ role: "user", content: "hi" }], {
+          ctx,
+          node: "writer",
+          config: config as never,
+        }),
+      }))
+      .addEdge(START, "writer")
+      .addEdge("writer", END)
+      .compile();
+
+    for await (const _chunk of await graph.stream({ out: "" }, {
+      streamMode: "updates",
+      configurable: { thread_id: "g1" },
+      callbacks: [new UsageCallbackHandler(budget, "g1")],
+    })) { /* drain */ }
+
+    expect(budget.calls).toBe(1);
+    expect(budget.byNode.writer?.calls).toBe(1);
+  });
+});
