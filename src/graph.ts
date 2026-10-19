@@ -1,3 +1,18 @@
+/**
+ * The editorial graph: researcher → planner → hitl_review → writer → reviewer.
+ *
+ * Two design decisions are worth knowing before reading the nodes:
+ *
+ * 1. Editing and judging are separate models. A model that edits an article and
+ *    then scores its own edits inflates the score, which would make the
+ *    `scoreAfter < 75` revision gate meaningless.
+ * 2. Claims are verified, not trusted. Suggestions are checked against a real
+ *    word-level diff, citations are normalised to known sources, and the writer
+ *    is asked which outline points it missed before revising.
+ *
+ * All untrusted text (topic, sources, retrieved pages) is wrapped by
+ * `prompt-safety.ts` before it reaches a prompt.
+ */
 import {
   Annotation,
   StateGraph,

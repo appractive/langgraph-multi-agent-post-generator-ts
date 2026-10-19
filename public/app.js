@@ -1,3 +1,17 @@
+/**
+ * Browser client for the editorial pipeline.
+ *
+ * The server streams Server-Sent Events; this file renders each stage into its
+ * tab, offers the human-review editor when the run pauses, and keeps the
+ * thread id so a paused run can be resumed.
+ *
+ * Two rules matter here:
+ *   - every model-produced string reaches the DOM through renderMarkdown(),
+ *     which sanitises and degrades to escaped text if the CDN is unavailable;
+ *   - the server API key lives in sessionStorage for this tab only and is never
+ *     written anywhere else.
+ */
+
 // DOM Elements
 const topicInput = document.getElementById('topic');
 const sourcesInput = document.getElementById('sources');

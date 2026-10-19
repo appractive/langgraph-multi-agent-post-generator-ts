@@ -1,3 +1,17 @@
+/**
+ * HTTP layer for the editorial pipeline.
+ *
+ * Responsibilities, in the order a request meets them:
+ *   1. rate limit, then authenticate (constant-time key compare),
+ *   2. validate the body with Zod before any model is called,
+ *   3. create a thread + RunBudget and run the graph,
+ *   4. translate LangGraph chunks into SSE frames,
+ *   5. persist a paused run so it can be resumed after a restart.
+ *
+ * The browser never owns workflow state: it receives a `threadId` and sends
+ * back only `{ threadId, outline }`, so it cannot forge an article, skip a
+ * stage, or change the model mid-run.
+ */
 import express, { type Request, type Response, type NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
 import crypto from 'crypto';
